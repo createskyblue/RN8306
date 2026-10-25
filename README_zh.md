@@ -21,7 +21,7 @@ OOP 风格对象 + 依赖注入（用户注入一个 IO 回调，内部 switch-c
 ```
 src/        驱动本体：rn8306.h / rn8306.c（仅依赖 C 标准库）
 examples/   使用示例：rn8306_example.c（依赖注入回调、中断入口、数据流接法）
-test/       主机自测：rn8306_selftest.c（内置"模拟芯片"，38 项断言）
+test/       主机自测：rn8306_selftest.c（内置"模拟芯片"，48 项断言）
 doc/        协议文档：RN8306_通信协议_SPI_HSDC.md（SPI + HSDC 协议整理、4V+3I 配置序列、踩坑清单）
             rn8306.pdf（官方《RN830x_RN730x V3 数据手册》Rev1.5）
 ref/        官方参考资料：用户手册 V1.2、数据手册 V1.3、厂商 HSDC.c 参考源码、RN8302B 资料包
@@ -60,7 +60,7 @@ cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c r
    必挂的回读校验问题（WMSW 命令型寄存器/SYSCFG 只写密码位）和 1 个 burst 读
    CMD 位序 bug（由厂商官方 FFT 代码 `fnRN8302_ReadBuf` 铁证裁决），均已修复
    并有回归自测覆盖；
-2. 主机端"模拟芯片"自测（38 项断言，含"命令型寄存器/只写位/CMD-BL 编码"等校验）。
+2. 主机端"模拟芯片"自测（48 项断言，含"命令型寄存器/只写位/CMD-BL 编码/速率守卫"等校验）。
 
 **当前阶段无法从手册闭环的问题**（手册自相矛盾、多次审读冲突等）统一记录在
 [doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md)，上板后逐项验证关闭。

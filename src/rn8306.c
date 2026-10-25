@@ -346,6 +346,29 @@ static uint32_t frame_payload_of(const rn8306_config_t *c)
     return (uint32_t)c->points_per_half * (uint32_t)c->wave_channels * bytes_per_sample;
 }
 
+/* HSCLK 各档频率(HDSC_CTL.CLKDIV 分频源 8.192MHz) */
+static const uint32_t hsdc_clk_hz[4] = { 4096000u, 2048000u, 1024000u, 512000u };
+
+static uint32_t cs_len_of(const rn8306_config_t *c)
+{
+    return (c->chk == RN8306_CHK_CRC16) ? 2u :
+           (c->chk == RN8306_CHK_SUM32) ? 4u : 0u;
+}
+
+/* HSCLK 下限守卫(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1
+ * 且 EN 自动清零。DS_CFG!=00(01/10/11 三档)均为固定 8K 采样(手册 3.4.21.2),
+ * 此时要求帧发送时间 < 80% 半块填充时间(留余量)。 */
+static rn8306_err_t check_hsdc_rate(const rn8306_config_t *c, uint32_t frame_payload)
+{
+    if ((c->dma_wavecon & 0x03u) != 0x00u) {
+        uint64_t frame_bits = (uint64_t)(frame_payload + cs_len_of(c)) * 8u;
+        uint64_t tx_us   = frame_bits * 1000000u / hsdc_clk_hz[(uint8_t)c->hsdc_clk & 3u];
+        uint64_t fill_us = (uint64_t)c->points_per_half * 125u;   /* 8kHz: 125us/点 */
+        if (tx_us > (fill_us * 4u / 5u)) { return RN8306_ERR_PARAM; }
+    }
+    return RN8306_OK;
+}
+
 /* 读改写 32 位寄存器(调用方需已解除写保护) */
 static rn8306_err_t rmw_reg32(rn8306_t *self, uint16_t addr, uint32_t clr, uint32_t set)
 {
@@ -404,17 +427,9 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     }
     self->frame_payload = frame_payload_of(&self->cfg);
 
-    /* HSCLK 下限守卫(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1
-     * 且 EN 自动清零。按固定 8K(DS_CFG=01)估算, 要求帧发送时间 < 80% 半块填充时间 */
-    if ((self->cfg.dma_wavecon & 0x03u) == 0x01u) {
-        static const uint32_t clk_hz[4] = { 4096000u, 2048000u, 1024000u, 512000u };
-        uint32_t cs_len = (self->cfg.chk == RN8306_CHK_CRC16) ? 2u :
-                          (self->cfg.chk == RN8306_CHK_SUM32) ? 4u : 0u;
-        uint64_t frame_bits = (uint64_t)(self->frame_payload + cs_len) * 8u;
-        uint64_t tx_us   = frame_bits * 1000000u / clk_hz[(uint8_t)self->cfg.hsdc_clk & 3u];
-        uint64_t fill_us = (uint64_t)self->cfg.points_per_half * 125u;   /* 8kHz: 125us/点 */
-        if (tx_us > (fill_us * 4u / 5u)) { return RN8306_ERR_PARAM; }
-    }
+    /* HSCLK 下限守卫(覆盖 DS_CFG=01/10/11 三档固定 8K) */
+    err = check_hsdc_rate(&self->cfg, self->frame_payload);
+    if (err != RN8306_OK) { return err; }
 
     rn8306_hsdc_resync(self);
     self->st.hsdc_up = false;
@@ -452,12 +467,19 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     if (err != RN8306_OK) { return err; }
     {
         uint8_t st[2];
-        if (rn8306_read_reg(self, RN8306_REG_SYSSR, st, 2u) == RN8306_OK) {
-            if ((st[0] & (uint8_t)(RN8306_SYSSR_WMS_MSK >> 8)) !=
-                (uint8_t)(RN8306_SYSSR_WMS_EMM >> 8)) {
-                return RN8306_ERR_VERIFY;
+        uint8_t attempt;
+        /* 若从 SLM/NVM 切入 EMM 可能发生唤醒复位(手册 3.5.4), 首读或为旧值:
+         * 校验不通过时隔 1ms 重读一次, 仍不通过才报错 */
+        for (attempt = 0; attempt < 2u; attempt++) {
+            if (rn8306_read_reg(self, RN8306_REG_SYSSR, st, 2u) == RN8306_OK) {
+                if ((st[0] & (uint8_t)(RN8306_SYSSR_WMS_MSK >> 8)) ==
+                    (uint8_t)(RN8306_SYSSR_WMS_EMM >> 8)) {
+                    break;
+                }
             }
+            if (attempt == 0u) { (void)io_delay_us(self, 1000u); }
         }
+        if (attempt >= 2u) { return RN8306_ERR_VERIFY; }
     }
 
     /* 3) SYSCFG 打开 HSDC 功能: 0xEA000000|0x1000 沿用厂商参考代码写法
@@ -590,8 +612,15 @@ rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en)
     } else {
         /* 停止: 手册 3.4.27.4 建议 HSDC_BUSY=1 时不要清 EN —— 先等发送空闲
          * (超时则继续清, 避免卡死); 再停波形缓存 + 关 HSDC 接口 + 关 HSDC 中断
-         * (避免停止后 INT1 持续触发), 并复位驱动状态(重新启动需重走 setup) */
-        (void)wait_hsdc_idle(self, 20u);
+         * (避免停止后 INT1 持续触发), 并复位驱动状态(重新启动需重走 setup)。
+         * 等待预算按帧发送时间动态计算(200us/次, 多留 1.6ms 余量):
+         * 慢档位如 7ch@2.048M 一帧 5.3ms, 固定次数会等不到 */
+        {
+            uint64_t tx_us = ((uint64_t)(self->frame_payload + cs_len_of(&self->cfg)) * 8u * 1000000u)
+                             / hsdc_clk_hz[(uint8_t)self->cfg.hsdc_clk & 3u];
+            uint32_t tries = (uint32_t)(tx_us / 200u) + 8u;
+            (void)wait_hsdc_idle(self, tries);
+        }
         err = rmw_reg32(self, RN8306_REG_DMA_WAVECON3, RN8306_WAVECON3_START, 0u);
         if (err == RN8306_OK) {
             err = rmw_reg32(self, RN8306_REG_HDSC_CTL, RN8306_HDSC_EN, 0u);
@@ -628,16 +657,32 @@ rn8306_err_t rn8306_hsdc_irq_enable(rn8306_t *self, bool half_ready, bool error)
     return err;
 }
 
-void rn8306_hsdc_set_layout(rn8306_t *self, uint8_t channels,
-                            uint16_t points_per_half, bool ext32)
+rn8306_err_t rn8306_hsdc_set_layout(rn8306_t *self, uint8_t channels,
+                                    uint16_t points_per_half, bool ext32)
 {
-    if (self == NULL) { return; }
-    if (channels == 0u || channels > 7u || points_per_half == 0u) { return; }
-    self->cfg.wave_channels   = channels;
-    self->cfg.points_per_half = points_per_half;
-    self->cfg.ext32           = ext32;
-    self->frame_payload       = frame_payload_of(&self->cfg);
+    rn8306_config_t probe;
+    uint32_t payload;
+
+    if (self == NULL) { return RN8306_ERR_PARAM; }
+    if (channels == 0u || channels > 7u || points_per_half == 0u) {
+        return RN8306_ERR_PARAM;
+    }
+
+    /* 先在副本上验证新布局(含 HSCLK 速率守卫), 通过后才应用 —— 防止绕过守卫 */
+    probe = self->cfg;
+    probe.wave_channels   = channels;
+    probe.points_per_half = points_per_half;
+    probe.ext32           = ext32;
+    payload = frame_payload_of(&probe);
+    {
+        rn8306_err_t err = check_hsdc_rate(&probe, payload);
+        if (err != RN8306_OK) { return err; }
+    }
+
+    self->cfg = probe;
+    self->frame_payload = payload;
     rn8306_hsdc_resync(self);
+    return RN8306_OK;
 }
 
 /* ------------------------------------------------------------------ */

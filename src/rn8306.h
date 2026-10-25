@@ -182,11 +182,13 @@ typedef void (*rn8306_evt_fn_t)(void *ctx, rn8306_t *self, rn8306_evt_t evt);
 typedef enum {
     RN8306_HSDC_CLK_4M096 = 0,   /* HSCLK = 4.096MHz, 全通道数可用 */
     RN8306_HSDC_CLK_2M048 = 1,   /* 2.048MHz, 8K 采样下最多 7 通道 */
-    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz, 8K 采样下最多 5 通道(6/7 通道会触发 HSDC_ERR) */
-    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz,  8K 采样下最多 3 通道 */
+    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz, 8K 采样下最多 4 通道(5 通道起被守卫拒绝) */
+    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz,  8K 采样下不可用(任何通道数都被守卫拒绝),
+                                  *          仅供降低采样率/点数的实验配置 */
 } rn8306_hsdc_clk_t;
 /* 隐性下限(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1 且 EN 自动清零。
- * 8K 采样下半块填充 8ms, 帧发送时间须明显小于它; hsdc_setup() 有对应守卫。 */
+ * 8K 采样下半块填充 8ms, 守卫要求帧发送时间 < 80% 填充时间(留余量);
+ * hsdc_setup()/rn8306_hsdc_set_layout() 均会执行该检查, 超限返回 RN8306_ERR_PARAM。 */
 
 typedef enum {
     RN8306_CHK_SUM32 = 0,        /* 帧尾 4B: 8bit 累加和, 32bit 结果, 不取反(厂商默认, 已验证) */
@@ -371,9 +373,11 @@ rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en);
 /* 使能/关闭 HSDC 相关中断(EMMIE2[12:11])。 */
 rn8306_err_t rn8306_hsdc_irq_enable(rn8306_t *self, bool half_ready, bool error);
 
-/* 运行中修改帧布局(换通道数/点数/位宽后调用), 重置帧定界状态。 */
-void rn8306_hsdc_set_layout(rn8306_t *self, uint8_t channels,
-                            uint16_t points_per_half, bool ext32);
+/* 运行中修改帧布局(换通道数/点数/位宽后调用), 重置帧定界状态。
+ * 返回 RN8306_ERR_PARAM 表示新布局通不过 HSCLK 速率守卫(8K 下发送跟不上),
+ * 此时布局保持不变。 */
+rn8306_err_t rn8306_hsdc_set_layout(rn8306_t *self, uint8_t channels,
+                                    uint16_t points_per_half, bool ext32);
 
 /* ---- 用户侧入口(中断/DMA 上下文调用) ---- */
 

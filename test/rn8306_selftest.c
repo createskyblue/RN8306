@@ -348,12 +348,69 @@ static void test_sample24(void)
     CHECK(rn8306_sample24(le_n, true) == (int32_t)0xFFF7FFFFu, "sample24 sign extend");
 }
 
+static void test_rate_guard(void)
+{
+    rn8306_t      rn;
+    rn8306_if_t   itf;
+    rn8306_config_t def = RN8306_CONFIG_DEFAULT;
+    rn8306_config_t cfg;
+
+    mock_reset();
+    memset(&itf, 0, sizeof(itf));
+    itf.io = mock_io;
+
+    /* 守卫矩阵(64 点/半块, SUM32, 80% 余量):
+     * 5ch@1.024M 发送 7.53ms > 6.4ms -> 拒; 4ch@1.024M 6.03ms -> 放行 */
+    cfg = def;
+    cfg.wave_channels = 7u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;   /* dma_wavecon=0x01 */
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard rejects 7ch@1.024M (DS_CFG=01)");
+
+    cfg = def;
+    cfg.wave_channels = 5u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard rejects 5ch@1.024M");
+
+    cfg = def;
+    cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 4ch@1.024M");
+
+    /* DS_CFG=10/11 也是固定 8K(手册 3.4.21.2), 守卫须覆盖 */
+    cfg = def;
+    cfg.wave_channels = 7u; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
+    cfg.dma_wavecon = 0x02u;                                          /* DS_CFG=10 */
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard covers DS_CFG=10 (fixed 8K)");
+
+    cfg.dma_wavecon = 0x03u;                                          /* DS_CFG=11 */
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard covers DS_CFG=11 (fixed 8K)");
+
+    /* DS_CFG=00 为同步采样(非固定 8K), 守卫跳过 */
+    cfg.dma_wavecon = 0x00u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard skips DS_CFG=00 (sync mode)");
+
+    /* set_layout 不能绕过守卫: 4ch@1.024M 合法, 改 7ch 应被拒且布局不变 */
+    cfg = def;
+    cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    rn8306_init(&rn, &itf, &cfg);
+    (void)rn8306_hsdc_setup(&rn);
+    CHECK(rn8306_hsdc_set_layout(&rn, 7u, 64u, false) == RN8306_ERR_PARAM,
+          "set_layout rejected by rate guard");
+    CHECK(rn.frame_payload == 4u * 64u * 3u, "layout unchanged after rejection");
+    CHECK(rn8306_hsdc_set_layout(&rn, 3u, 64u, false) == RN8306_OK, "set_layout valid change OK");
+    CHECK(rn.frame_payload == 3u * 64u * 3u, "layout applied after valid change");
+}
+
 int main(void)
 {
     test_register_access();
     test_burst_read();
     test_hsdc_stream();
     test_sample24();
+    test_rate_guard();
     printf("\n%s (%d failure(s))\n", failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", failures);
     return (failures == 0) ? 0 : 1;
 }
