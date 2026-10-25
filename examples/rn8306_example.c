@@ -167,10 +167,20 @@ int rn8306_demo(void)
         return -1;
     }
 
-    /* 上电时序: 释放复位 -> 等 50ms -> 读 DeviceID 自检(0x830200) */
-    if (rn8306_check_device(&g_rn8306) != RN8306_OK) {
-        printf("rn8306 not found (check wiring/spi/cs)\n");
-        return -2;
+    /* 上电自检: 读 DeviceID。注意 RN8306 的真实 DeviceID 手册未给(0x830200/0x830201
+     * 是手册标注的 RN8302B 值, 见 doc/OPEN_QUESTIONS.md Q7), 所以这里只打印原始值、
+     * SPI 读不通才退出; 不匹配仅告警 —— 请把读到的真实 ID 记下来回填 Q7 与
+     * RN8306_DEVICEID_VAL, 后续即可用它做硬性自检 */
+    {
+        uint8_t id[3];
+        if (rn8306_read_reg(&g_rn8306, RN8306_REG_DEVICEID, id, 3u) != RN8306_OK) {
+            printf("SPI read failed - check wiring/spi/cs\n");
+            return -2;
+        }
+        printf("DeviceID = %02X%02X%02X (expect 830200/830201 for RN8302B; "
+               "RN8306 actual value unknown, record it for Q7)\n",
+               id[0], id[1], id[2]);
+        (void)rn8306_check_device(&g_rn8306);   /* 匹配则静默, 不匹配已在上面打印原始值 */
     }
 
     /* 配置芯片 HSDC(两级写使能/软复位/波形格式/HDSC_CTL/中断), 默认 8K 速率 */
