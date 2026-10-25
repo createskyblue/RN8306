@@ -115,6 +115,11 @@ static void my_evt_cb(void *ctx, rn8306_t *self, rn8306_evt_t evt)
 
 static rn8306_t g_rn8306;                 /* 驱动对象: 用户静态分配 */
 
+/* 平台中断入口(示意), 提前声明以满足 -Wmissing-prototypes */
+void board_exti_irq_handler(void);
+void board_spi_slave_dma_done(const uint8_t *buf, uint32_t len);
+int  rn8306_demo(void);
+
 /* 你平台的 INT1 外部中断服务程序(示意) */
 void board_exti_irq_handler(void)
 {
