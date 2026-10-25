@@ -356,31 +356,32 @@ static uint32_t cs_len_of(const rn8306_config_t *c)
 }
 
 /* HSCLK 下限守卫(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1
- * 且 EN 自动清零。手册 6.6 官方口径: 数据量 = 采样率 x 通道数 x 24(bit/s),
- * 连续模式要求 HSCLK 明显大于数据量 —— 本守卫等价判据为
- * "帧发送时间 < 80% 半块填充时间"(比 6.6 表选档略保守, 结论一致);
- * 采样率过快(如 512 点/周波同步模式 x7ch = 4.3Mbps)导致 4.096M 也不够时,
- * 同样会被本判据拦截。
+ * 且 EN 自动清零。判据对齐手册 6.6 官方口径(数据量 = 采样率 x 通道数 x 24,
+ * "HSDC 速率配置大于等于表中速率即可"): 帧发送时间(含帧尾校验) <= 半块填充时间,
+ * 即占用率 <=100% —— 手册表自身含 90% 占用的行(如 128 点@50Hz x6ch -> 1.024M),
+ * 按 100% 判据恰好放行, 与官方一致; 官方判"不支持"的行(512 点 x7ch = 4.3Mbps
+ * > 4.096M)占用 >100% 被拒。此前的 80% 余量为自创判据, 会拒掉 5 行官方支持
+ * 配置(含 512 点 x6ch@4.096M 这一无档可升的行), 已去除。
  * 采样率来源: DS_CFG=01/10/11 三档均为固定 8K(3.4.21.2); DS_CFG=00 同步采样
- * 跟踪电网频率(40~70Hz, 点/周波 x 基频, 最高 512x70Hz=35.84kHz, 手册 2.4.2),
- * 无法从寄存器配置推断, 要求用户经 cfg->sync_sample_hz 显式给出, 未给则拒绝
- * (防止高点数配置静默放行)。 */
+ * 跟踪电网频率(40~70Hz, 点/周波 x 基频, 手册 2.4.2), 要求用户经 cfg->
+ * sync_sample_hz 显式给出(合法范围 2560~35840Hz = 64 点@40Hz ~ 512 点@70Hz),
+ * 未给或越界均拒绝(防止高点数配置静默放行 / 误填极小值使守卫失效)。 */
 static rn8306_err_t check_hsdc_rate(const rn8306_config_t *c, uint32_t frame_payload)
 {
     uint64_t sample_hz;
 
     if ((c->dma_wavecon & 0x03u) != 0x00u) {
         sample_hz = 8000u;                       /* DS_CFG=01/10/11: 固定 8K */
-    } else if (c->sync_sample_hz != 0u) {
+    } else if ((c->sync_sample_hz >= 2560u) && (c->sync_sample_hz <= 35840u)) {
         sample_hz = c->sync_sample_hz;           /* DS_CFG=00: 用户显式给出 */
     } else {
-        return RN8306_ERR_PARAM;                 /* 同步采样未给出采样率 */
+        return RN8306_ERR_PARAM;                 /* 同步采样率未给或越界 */
     }
     {
         uint64_t frame_bits = (uint64_t)(frame_payload + cs_len_of(c)) * 8u;
         uint64_t tx_us   = frame_bits * 1000000u / hsdc_clk_hz[(uint8_t)c->hsdc_clk & 3u];
         uint64_t fill_us = (uint64_t)c->points_per_half * 1000000u / sample_hz;
-        if (tx_us > (fill_us * 4u / 5u)) { return RN8306_ERR_PARAM; }
+        if (tx_us > fill_us) { return RN8306_ERR_PARAM; }
     }
     return RN8306_OK;
 }

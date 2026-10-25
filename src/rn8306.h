@@ -182,12 +182,11 @@ typedef void (*rn8306_evt_fn_t)(void *ctx, rn8306_t *self, rn8306_evt_t evt);
 typedef enum {
     RN8306_HSDC_CLK_4M096 = 0,   /* HSCLK = 4.096MHz, 全通道数可用 */
     RN8306_HSDC_CLK_2M048 = 1,   /* 2.048MHz, 8K 采样下最多 7 通道 */
-    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz, 8K 采样下最多 4 通道(5 通道起被守卫拒绝) */
-    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz,  8K 采样下不可用(任何通道数都被守卫拒绝),
-                                  *          仅供降低采样率/点数的实验配置 */
+    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz, 8K 采样下最多 5 通道(占用 94%, 手册口径内) */
+    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz,  8K 采样下最多 2 通道 */
 } rn8306_hsdc_clk_t;
 /* 隐性下限(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1 且 EN 自动清零。
- * 8K 采样下半块填充 8ms, 守卫要求帧发送时间 < 80% 填充时间(留余量);
+ * 守卫判据对齐手册 6.6 官方口径: 帧发送时间(含帧尾) <= 半块填充时间(占用率 <=100%);
  * hsdc_setup()/rn8306_hsdc_set_layout() 均会执行该检查, 超限返回 RN8306_ERR_PARAM。 */
 
 typedef enum {
@@ -234,10 +233,6 @@ typedef struct {
                                       * 其他速率见手册 3.4 节该寄存器说明。
                                       * 注: WAVECNT=0 时该寄存器在缓存过程中会自变(反映实际分频数),
                                       * 驱动对其不做写后回读校验 */
-    uint32_t          sync_sample_hz; /* DS_CFG=00(同步采样)时的实际采样率(Hz), 须显式给出
-                                       * (= 点/周波 x 电网基频, 40~70Hz 跟踪, 手册 2.4.2; 最高
-                                       * 512点x70Hz=35.84kHz)。未给(0)时 hsdc_setup/set_layout
-                                       * 返回 ERR_PARAM; DS_CFG!=00(固定 8K)时忽略本字段 */
     uint32_t          dma_wavecon2;  /* DMA_WAVECON2(0x1D1) 原始值; 0=不写该寄存器(保持复位 0x3F800,
                                       * 原始波形直通, 默认)。厂商 HSDC 流参考配置为 0x00000700
                                       * (CIC 直流校正+增益自动调整+谐波衰减补偿, 使波形幅值与计量
@@ -246,6 +241,12 @@ typedef struct {
     uint8_t           spi_retry;     /* SPI 读帧校验失败重试次数, 默认 2 */
     /* ---- 复位 ---- */
     uint32_t          reset_delay_us;/* RSTN 释放后到访问芯片的延时, 默认 50ms */
+    /* 注: 以下字段后加入结构体, 请使用指定初始化器(.field=value)而非位置初始化 */
+    uint32_t          sync_sample_hz; /* 仅 DS_CFG=00(同步采样)需要: 实际采样率(Hz),
+                                       * = 点/周波 x 电网基频(40~70Hz 跟踪, 手册 2.4.2)。
+                                       * 合法范围 2560~35840(64点@40Hz ~ 512点@70Hz),
+                                       * 未给(0)或越界时 hsdc_setup/set_layout 返回
+                                       * ERR_PARAM; DS_CFG!=00(固定 8K)时忽略本字段 */
 } rn8306_config_t;
 
 /* 默认配置: HSCLK 4.096MHz / 8K 采样率 / 6 通道 / 24bit / SUM32 校验 / 字节反序 */

@@ -362,8 +362,8 @@ static void test_rate_guard(void)
     memset(&itf, 0, sizeof(itf));
     itf.io = mock_io;
 
-    /* 守卫矩阵(64 点/半块, SUM32, 80% 余量):
-     * 5ch@1.024M 发送 7.53ms > 6.4ms -> 拒; 4ch@1.024M 6.03ms -> 放行 */
+    /* 守卫矩阵(64 点/半块, SUM32, 手册 6.6 官方口径 占用率<=100%):
+     * 7ch@1.024M 发送 10.53ms > 8ms -> 拒; 5ch@1.024M 7.53ms(占用 94%) -> 放行 */
     cfg = def;
     cfg.wave_channels = 7u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;   /* dma_wavecon=0x01 */
     rn8306_init(&rn, &itf, &cfg);
@@ -372,7 +372,12 @@ static void test_rate_guard(void)
     cfg = def;
     cfg.wave_channels = 5u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
     rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard rejects 5ch@1.024M");
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 5ch@1.024M (94%, official <=100%)");
+
+    cfg = def;
+    cfg.wave_channels = 2u; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 2ch@512K (75%)");
 
     cfg = def;
     cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
@@ -408,6 +413,38 @@ static void test_rate_guard(void)
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
           "sync 6.4kHz: 7ch@2.048M allowed");
+
+    /* 手册 6.6 官方 90% 占用行: 128 点@50Hz(6.4kHz) x6ch -> 1.024M
+     * (帧 9.03ms <= 填充 10ms), 以及原 80% 判据下无档可升的
+     * 512 点@50Hz(25.6kHz) x6ch -> 4.096M(帧 2.26ms <= 2.5ms) */
+    cfg = def;
+    cfg.dma_wavecon = 0x00u; cfg.sync_sample_hz = 6400u;
+    cfg.wave_channels = 6u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
+          "manual 6.6 row: 128pts x6ch -> 1.024M (90%) allowed");
+
+    cfg.sync_sample_hz = 25600u; cfg.hsdc_clk = RN8306_HSDC_CLK_4M096;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
+          "manual 6.6 row: 512pts x6ch -> 4.096M allowed (was unsolvable)");
+
+    /* 手册 6.6 官方不支持行: 512 点 x7ch = 4.3Mbps > 4.096M(占用 >100%) */
+    cfg.wave_channels = 7u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
+          "manual 6.6 row: 512pts x7ch unsupported (>4.096M)");
+
+    /* sync_sample_hz 范围校验: 误填极小/超大值均拒绝(守卫不失效) */
+    cfg = def;
+    cfg.dma_wavecon = 0x00u; cfg.wave_channels = 7u;
+    cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
+    cfg.sync_sample_hz = 1u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sync_sample_hz=1 rejected");
+    cfg.sync_sample_hz = 40000u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sync_sample_hz=40000 rejected");
 
     /* B1 回归: 守卫失败的 setup 不得触碰状态 —— 先合法 setup+start, 再以非法
      * 配置重跑 setup, frame_payload 应保持旧值(正在运行的流不受影响) */
