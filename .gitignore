@@ -1,0 +1,10 @@
+# 构建产物
+*.o
+*.exe
+*.elf
+*.bin
+
+# 手册页面渲染图(审查取证用, 可由 PDF 重新生成: pdftoppm -png -r 100 xxx.pdf out)
+doc/pages/
+doc/um/
+ref/d5242/extracted/参考资料/um3/
