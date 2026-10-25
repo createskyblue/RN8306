@@ -186,7 +186,7 @@ Burst 读波形缓存 Bank2 起 16 个数据（BL=011）：
   - **通道交叉缓存**（DMA_WAVECON3.BIT10=1）：按采样点顺序各通道数据交叉排列（手册 6.2.2）。
 - **常用 BUFCFG 组合（2026-10 复核订正）**：
   - 6 通道 UA/UB/UC/IA/IB/IC 交叉 → **mode0（BUFCFG=5'b00000）**，即厂商 `WSAVECON=0x80 + DMA_WAVECON3=0x400`；每采样点序 UA,UB,UC,IA,IB,IC；
-  - **7 通道（4V+3I）交叉 → BUFCFG=5'b10010**，即 `WSAVECON=0x82（低 4 位=0010）+ DMA_WAVECON3[1]=1`；每采样点序 **UA,UB,UC,IA,IB,IC,IN**，半块 200H~3BFH / 3C0H~57FH（备选 BUFCFG=01011 亦为 7 通道同顺序）；
+  - **7 通道（4V+3I）交叉 → BUFCFG=5'b10010**，即 `WSAVECON=0x82（低 4 位=0010）+ DMA_WAVECON3[1]=1`；每采样点序 **UA,UB,UC,IA,IB,IC,IN**，半块 200H~3BFH / 3C0H~57FH（备选 BUFCFG=10101/mode17 亦为 7 通道、半块同为 448 地址，但每采样点顺序为 **UA,IA,UB,IB,UC,IC,IN**；早期版本误记 01011 为 7 通道备选——01011=mode11 属手册排版错乱区、读作 IC 单通道，2026-10-25 已订正）；
   - **陷阱**：只置 DMA_WAVECON3[1]=1 而 WSAVECON[3:0]=0000（BUFCFG=10000）**不是 7 通道**，帧定界会错位。该表存在排版笔误，两次审读分别读作 6 通道/纯 IN——无论哪种都不是 7 通道。
 - 发送顺序与缓存模式一致（6.3 节）：缓存**上半块**与**下半块**交替发送，例如交叉模式 mode0~12 上半块 200H–37FH、下半块 380H–4FFH（mode14/17 为 200H–3BFH / 3C0H–57FH）。
 

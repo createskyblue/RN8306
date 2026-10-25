@@ -455,13 +455,24 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     self->st.hsdc_up = false;
 
     /* 波形缓存格式 BUFCFG[4:0] = {DMA_WAVECON3[1], WSAVECON[3:0]}(手册 6.2, p146-147):
-     *   7 通道(4V+3I) -> BUFCFG=10010: 交叉缓存, 每采样点序 UA,UB,UC,IA,IB,IC,IN
-     *                   (备选 01011 亦为 7 通道同顺序)
-     *   6 通道        -> BUFCFG=00000: 交叉缓存, 序 UA,UB,UC,IA,IB,IC
-     * 陷阱: 只置 DMA_WAVECON3[1] 而 WSAVECON[3:0]=0000(BUFCFG=10000) 不是 7 通道,
-     *       帧定界会错位(该表存在排版笔误, 不同审读分别读作 6 通道/纯 IN)。 */
+     *   7 通道(4V+3I) -> BUFCFG=10010(mode14): 序 UA,UB,UC,IA,IB,IC,IN, 半块 448 地址
+     *                   (备选 10101/mode17 亦为 7 通道, 但顺序为 UA,IA,UB,IB,UC,IC,IN)
+     *   6 通道        -> BUFCFG=00000(mode0):  序 UA,UB,UC,IA,IB,IC, 半块 384 地址
+     *                   (备选 10011/mode15, 顺序 UA,IA,UB,IB,UC,IC)
+     * 表低段(单通道/纯 IN 档)存在排版笔误、含义不确定, 不允许显式使用 */
     if (self->cfg.bufcfg != 0xFFu) {
         bufcfg = (uint8_t)(self->cfg.bufcfg & 0x1Fu);
+        /* 显式 bufcfg 白名单 + 与通道数一致性校验(防配置不匹配导致静默帧错位) */
+        switch (bufcfg) {
+        case 0x00u: case 0x13u:                    /* 6 通道 */
+            if (self->cfg.wave_channels != 6u) { return RN8306_ERR_PARAM; }
+            break;
+        case 0x12u: case 0x15u:                    /* 7 通道 */
+            if (self->cfg.wave_channels != 7u) { return RN8306_ERR_PARAM; }
+            break;
+        default:
+            return RN8306_ERR_PARAM;               /* 未验证档位(含手册排版错乱区) */
+        }
     } else {
         bufcfg = (self->cfg.wave_channels >= 7u) ? 0x12u : 0x00u;
     }

@@ -212,13 +212,18 @@ typedef struct {
                                      * 7 通道(4V+3I): UA UB UC IA IB IC IN(第 4 路电压接 IN 输入) */
     uint16_t          points_per_half; /* 半块采样点数, 默认 64(整块 128 点),
                                        * 帧长 = points_per_half * wave_channels * (ext32?4:3) */
-    uint8_t           bufcfg;        /* BUFCFG[4:0] 波形缓存格式, 0xFF=按通道数自动(推荐):
-                                      *   6 通道 -> BUFCFG=00000: 交叉缓存, 序 UA,UB,UC,IA,IB,IC
-                                      *   7 通道 -> BUFCFG=10010: 交叉缓存, 序 UA,UB,UC,IA,IB,IC,IN
-                                      *             (备选 01011 亦为 7 通道同顺序, 手册 p147)
-                                      * 陷阱: DMA_WAVECON3[1]=1 而 WSAVECON[3:0]=0000 -> BUFCFG=10000,
-                                      *       不是 7 通道(手册 p147 该行读作 6 通道; 该表存在排版笔误,
-                                      *       另一次审读为纯 IN —— 无论哪种都不是 7 通道, 帧定界都会错位) */
+    uint8_t           bufcfg;        /* BUFCFG[4:0] 波形缓存格式, 0xFF=按通道数自动(推荐)。
+                                      * 显式指定仅允许以下已验证值(与 wave_channels 匹配, 手册
+                                      * 6.2.2 高段 + 6.3.2 地址表, 其余值 setup 返回 ERR_PARAM):
+                                      *   6 通道 -> 00000(mode0): 序 UA,UB,UC,IA,IB,IC; 半块 384 地址=64 点
+                                      *            10011(mode15): 序 UA,IA,UB,IB,UC,IC(顺序不同)
+                                      *   7 通道 -> 10010(mode14): 序 UA,UB,UC,IA,IB,IC,IN; 半块 448 地址=64 点
+                                      *            10101(mode17): 序 UA,IA,UB,IB,UC,IC,IN(顺序不同)
+                                      * 注意: 手册 6.2.2 表低段(00001~01100 等)存在排版笔误, 含义
+                                      * 不确定(单通道/纯 IN 各轮审读不一), 勿显式使用;
+                                      * 改 bufcfg 不改变 frame_payload(恒按 points_per_half x
+                                      * channels x 3 计算), 单通道档(384 点/半块)如需使用须
+                                      * 同步调整 points_per_half 且先上板验证 */
     bool              in_wave_en;    /* 写 IN_WaveEN=0x0001。7 通道交叉模式保持 false(复位默认,
                                       * IN/IA 独立流转); 若实测 IN 无数据再置 true 验证(p125-126) */
     rn8306_cs_order_t cs_order;      /* 帧尾校验字段字节序, 默认 AUTO(见上方说明) */

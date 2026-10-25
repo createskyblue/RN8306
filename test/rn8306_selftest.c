@@ -446,6 +446,20 @@ static void test_rate_guard(void)
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sync_sample_hz=40000 rejected");
 
+    /* bufcfg 白名单: 照抄早期错误注释的 0x0B(IC 单通道档)必须被拒;
+     * 0x15(mode17, 7ch 顺序不同)与 7ch 匹配放行; 0x12 与 6ch 不匹配被拒 */
+    cfg = def;
+    cfg.wave_channels = 7u; cfg.bufcfg = 0x0Bu;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "bufcfg=0x0B (typo'd note) rejected");
+    cfg.bufcfg = 0x15u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "bufcfg=0x15 (mode17, 7ch) allowed");
+    CHECK(mock_regs[0x163] == 0x85u, "WSAVECON=0x85 for bufcfg=10101");
+    cfg.wave_channels = 6u; cfg.bufcfg = 0x12u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "bufcfg/ch mismatch rejected");
+
     /* B1 回归: 守卫失败的 setup 不得触碰状态 —— 先合法 setup+start, 再以非法
      * 配置重跑 setup, frame_payload 应保持旧值(正在运行的流不受影响) */
     cfg = def;
