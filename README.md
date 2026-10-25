@@ -17,6 +17,11 @@ interface** on which the chip acts as SPI master, streaming raw ADC waveform
 buffers to the MCU at up to 4.096 MHz. Typical applications: smart meters,
 energy management and power monitoring.
 
+> Note: **HSDC** (the chip's high-speed waveform interface implemented by this
+> driver) and **HDSC** (HuaDa Semiconductor, the parent group behind Renergy:
+> CEC → HDSC → Shanghai Belling → Renergy) are two unrelated things — a
+> coincidence of acronyms.
+
 ## About this driver
 
 A platform-independent C driver for the Renergy **RN8306** three-phase
