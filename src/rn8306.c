@@ -28,11 +28,17 @@ static uint32_t reg_be_unpack(const uint8_t *p) { return ((uint32_t)p[0]<<24) | 
 /* 内部小工具                                                          */
 /* ------------------------------------------------------------------ */
 
-/* CMD 字节 = {R/W, Bank[2:0], BL[2:0], 0}, R/W: 0=读 1=写 */
+/* CMD 字节 = {R/W, Bank[2:0], BL[1:0], BL[2], 1'b0}, R/W: 0=读 1=写
+ * BL 位序依据手册 5.3 正文(p140): BL[1:0] 在 bit[3:2], BL[2] 在 bit[1];
+ * 已由厂商官方 fnRN8302_ReadBuf()(Dl645_Fft.c, burst 读 16 地址写 CMD|=0x0C)
+ * 证实 —— 手册同节帧格式表(p141)写作 {BANK, BL[2:0], 1'b0} 属排版笔误, 不采用。 */
 static uint8_t build_cmd(uint16_t addr, bool wr, uint8_t bl_code)
 {
     uint8_t bank = (uint8_t)((addr >> 8) & 0x07u);
-    return (uint8_t)((wr ? 0x80u : 0x00u) | ((uint8_t)(bank << 4)) | (uint8_t)((bl_code & 0x07u) << 1));
+    return (uint8_t)((wr ? 0x80u : 0x00u)
+                   | (uint8_t)(bank << 4)
+                   | (uint8_t)((bl_code & 0x03u) << 2)           /* BL[1:0] -> bit[3:2] */
+                   | (uint8_t)(((bl_code >> 2) & 0x01u) << 1));  /* BL[2]   -> bit[1]   */
 }
 
 /* SPI 帧校验和: ~(ADDR + CMD + DATA) 单字节和取反 */
@@ -398,6 +404,18 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     }
     self->frame_payload = frame_payload_of(&self->cfg);
 
+    /* HSCLK 下限守卫(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1
+     * 且 EN 自动清零。按固定 8K(DS_CFG=01)估算, 要求帧发送时间 < 80% 半块填充时间 */
+    if ((self->cfg.dma_wavecon & 0x03u) == 0x01u) {
+        static const uint32_t clk_hz[4] = { 4096000u, 2048000u, 1024000u, 512000u };
+        uint32_t cs_len = (self->cfg.chk == RN8306_CHK_CRC16) ? 2u :
+                          (self->cfg.chk == RN8306_CHK_SUM32) ? 4u : 0u;
+        uint64_t frame_bits = (uint64_t)(self->frame_payload + cs_len) * 8u;
+        uint64_t tx_us   = frame_bits * 1000000u / clk_hz[(uint8_t)self->cfg.hsdc_clk & 3u];
+        uint64_t fill_us = (uint64_t)self->cfg.points_per_half * 125u;   /* 8kHz: 125us/点 */
+        if (tx_us > (fill_us * 4u / 5u)) { return RN8306_ERR_PARAM; }
+    }
+
     rn8306_hsdc_resync(self);
     self->st.hsdc_up = false;
 
@@ -425,13 +443,22 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     err = rn8306_write_protect(self, true);
     if (err != RN8306_OK) { return err; }
 
-    /* 2) 切换到 EMM 计量模式: 复位后芯片默认测试模式, 不切则计量/波形 DMA 可能
-     *    不工作(手册 3.4.36, p114; 官方程序上电及每次整片复位后必写 0xA2)。
+    /* 2) 切换到 EMM 计量模式: RN8306 上电/复位后的缺省工作模式手册未明示,
+     *    写 GOEMM(0xA2) 兜底确保进入 EMM(若已在 EMM, 芯片不动作, 手册 3.4.36)。
      *    WMSW 为命令型寄存器: 写 0xA2 成功后读出为模式标志 2'b01(非 0xA2),
-     *    故不走回读校验; 需确认模式可读 SYSSR.WMS[1:0]==2'b01 */
+     *    不能按写入值回读校验, 改用 SYSSR.WMS[1:0] 确认(手册 3.4.42, bits[15:14]) */
     b1 = RN8306_WMSW_EMM;
     err = rn8306_write_reg(self, RN8306_REG_WMSW, &b1, 1u);
     if (err != RN8306_OK) { return err; }
+    {
+        uint8_t st[2];
+        if (rn8306_read_reg(self, RN8306_REG_SYSSR, st, 2u) == RN8306_OK) {
+            if ((st[0] & (uint8_t)(RN8306_SYSSR_WMS_MSK >> 8)) !=
+                (uint8_t)(RN8306_SYSSR_WMS_EMM >> 8)) {
+                return RN8306_ERR_VERIFY;
+            }
+        }
+    }
 
     /* 3) SYSCFG 打开 HSDC 功能: 0xEA000000|0x1000 沿用厂商参考代码写法
      *    (高 8 位 0xEA 是 SYS_PS 写密码, WO 只写, 回读恒不含; bit12 手册标
@@ -528,6 +555,22 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     return RN8306_OK;
 }
 
+/* 等 HSDC 发送空闲(EMMIF2 bit20 HSDC_BUSY, 手册 3.4.27.4)。
+ * 超时仍返回错误, 由调用方决定是否继续(避免卡死)。 */
+static rn8306_err_t wait_hsdc_idle(rn8306_t *self, uint32_t tries)
+{
+    uint32_t v;
+
+    while (tries-- > 0u) {
+        if (rn8306_read_reg32(self, RN8306_REG_EMMIF2, &v) != RN8306_OK) {
+            return RN8306_ERR_IO;
+        }
+        if ((v & RN8306_EMMIF2_HSDC_BUSY) == 0u) { return RN8306_OK; }
+        (void)io_delay_us(self, 200u);
+    }
+    return RN8306_ERR_STATE;
+}
+
 rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en)
 {
     rn8306_err_t err;
@@ -545,8 +588,10 @@ rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en)
             err = rmw_reg32(self, RN8306_REG_DMA_WAVECON3, 0u, RN8306_WAVECON3_START);
         }
     } else {
-        /* 停止: 停波形缓存 + 关 HSDC 接口 + 关 HSDC 中断(避免停止后 INT1 持续触发),
-         * 并复位驱动状态(重新启动需重走 setup) */
+        /* 停止: 手册 3.4.27.4 建议 HSDC_BUSY=1 时不要清 EN —— 先等发送空闲
+         * (超时则继续清, 避免卡死); 再停波形缓存 + 关 HSDC 接口 + 关 HSDC 中断
+         * (避免停止后 INT1 持续触发), 并复位驱动状态(重新启动需重走 setup) */
+        (void)wait_hsdc_idle(self, 20u);
         err = rmw_reg32(self, RN8306_REG_DMA_WAVECON3, RN8306_WAVECON3_START, 0u);
         if (err == RN8306_OK) {
             err = rmw_reg32(self, RN8306_REG_HDSC_CTL, RN8306_HDSC_EN, 0u);

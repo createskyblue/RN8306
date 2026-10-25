@@ -24,6 +24,7 @@ static uint8_t  mock_wren2[4];      /* WREN2(0x17F,4B): 真实芯片为独立寄
                                      * 不与扁平地址 0x180(WREN)/0x181(WMSW)/0x182(SOFTRST) 相互覆盖 */
 static uint8_t  mock_emmif2[4];     /* EMMIF2(0x16C,4B): 同理, 不与 EMMIE2(0x16B..0x16E) 窗口重叠 */
 static int      mock_bad_write_frames;
+static int      mock_bad_cmd_frames;    /* CMD 的 BL 编码与数据长度不符的帧数 */
 static uint32_t mock_wren_count;
 
 static void mock_reset(void)
@@ -37,6 +38,7 @@ static void mock_reset(void)
     mock_regs[0x1C9] = 0x00; mock_regs[0x1CA] = 0x00;                           /* HDSC_CTL 复位=0x04 */
     mock_regs[0x1CC] = 0x04;
     mock_bad_write_frames = 0;
+    mock_bad_cmd_frames = 0;
     mock_wren_count = 0;
 }
 
@@ -53,8 +55,22 @@ static int mock_io(void *ctx, rn8306_io_op_t op, rn8306_io_msg_t *m)
         if ((m->tx[1] & 0x80u) == 0u) {
             /* 读帧: 返回寄存器内容 + 校验和 */
             uint16_t base = (uint16_t)(((uint16_t)(m->tx[1] >> 4) & 0x07u) << 8);
+            uint16_t ra = (uint16_t)(base + m->tx[0]);
+            uint8_t bl_field = (uint8_t)(((m->tx[1] >> 2) & 0x03u) | (((m->tx[1] >> 1) & 0x01u) << 2));
+            static const uint16_t bl_len[8] = { 1u, 4u, 8u, 16u, 32u, 64u, 0u, 0u };
+
+            /* CMD 的 BL 编码须与数据长度一致(正文序 BL[1:0]@bit[3:2], BL[2]@bit[1]):
+             * 仅对波形 burst(3 字节对齐且>=12B)校验, 单寄存器读(1~4B)不适用 */
+            if (data_len >= 12u && (data_len % 3u) == 0u && bl_len[bl_field] != data_len / 3u) {
+                mock_bad_cmd_frames++;
+            }
             for (i = 0; i < data_len; i++) {
-                uint8_t d = mock_regs[base + m->tx[0] + i];
+                uint8_t d;
+                if (ra == 0x016Cu && data_len == 4u) {
+                    d = mock_emmif2[i];               /* EMMIF2: 独立寄存器, 读写一致 */
+                } else {
+                    d = mock_regs[ra + i];
+                }
                 if (m->rx != NULL) { m->rx[2u + i] = d; }
                 sum += d;
             }
@@ -73,6 +89,8 @@ static int mock_io(void *ctx, rn8306_io_op_t op, rn8306_io_msg_t *m)
                     memcpy(mock_emmif2, &m->tx[2], 4u);  /* EMMIF2: 独立 4 字节寄存器 */
                 } else if (ra == 0x0181u && data_len == 1u && m->tx[2] == 0xA2u) {
                     mock_regs[0x181] = 0x01u;  /* WMSW 命令型: 写 0xA2 后读出为模式标志 2'b01 */
+                    mock_regs[0x18A] = 0x40u;  /* SYSSR.WMS[1:0]=2'b01(bits[15:14]), 高字节=0x40 */
+                    mock_regs[0x18B] = 0x00u;
                 } else if (ra == 0x0178u && data_len == 4u) {
                     /* SYSCFG: 高 8 位 SYS_PS 为 WO 写密码(0xEA), 回读恒为 0 */
                     mock_regs[0x178] = 0x00u;
@@ -173,6 +191,7 @@ static void test_register_access(void)
 
     /* 驱动发出的所有写帧校验和都被模拟芯片认可 */
     CHECK(mock_bad_write_frames == 0, "all write frames have valid checksum");
+    CHECK(mock_bad_cmd_frames == 0, "burst CMD BL encoding matches length (vendor order)");
 
     /* 写使能确实发生过(update_reg32 内部两级写使能) */
     CHECK(mock_wren_count >= 1, "WREN(0xE5) issued");

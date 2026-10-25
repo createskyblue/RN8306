@@ -15,7 +15,8 @@
  *  硬件背景(依据《锐能微三相计量芯片用户手册》V1.2、《RN830x_RN730x V3 数据手册》Rev1.5):
  *    - SPI(芯片为从机): SCSN/SCLK/SDI/SDO, 最大 3.5Mbps, 用于寄存器读写。
  *      帧格式: [ADDR][CMD][DATA...][CS], CS = ~(ADDR+CMD+DATA) 单字节和取反。
- *      CMD = {R/W, Bank[2:0], BL[2:0], 0}, R/W: 0=读 1=写(注意与常见器件相反)。
+ *      CMD = {R/W, Bank[2:0], BL[1:0], BL[2], 0}, R/W: 0=读 1=写(注意与常见器件相反);
+ *      BL 位序按手册 5.3 正文(厂商 fnRN8302_ReadBuf 证实, 帧格式表为排版笔误)。
  *      数据在 SCLK 上升沿输出、下降沿采样(MCU 侧 SPI 模式1: CPOL=0,CPHA=1)。
  *    - HSDC(芯片为主机): HSCSN/HSCLK/HSDAO, 波形缓存半满自动推送,
  *      MCU 把硬件 SPI 配成从机只收。每帧 = 半块波形 + 可选帧尾校验
@@ -43,10 +44,12 @@ extern "C" {
 #define RN8306_REG_WREN             0x0180u  /* 写使能寄存器1, 1B, 命令值见 RN8306_WREN_CMD */
 #define RN8306_REG_WREN2            0x017Fu  /* 写使能寄存器2, 4B; bit[15:8]=命令字(WREN2=0xE5/WRDIS2=0xDC),
                                              * bit[7:0]=扩位命令(0xAA/0x55), bit[31:16]保留(手册 3.4.35, p112) */
-#define RN8306_REG_WMSW             0x0181u  /* 工作模式切换(命令型), 1B: 0xA2=GOEMM 切 EMM 模式;
-                                             * 复位后默认测试模式, 上电/整片软复位后必须写(手册 3.4.36, p114)。
-                                             * 注意: 写 0xA2 成功后该寄存器读出为模式标志 2'b01(SYSSR.WMS[1:0]
-                                             * 同步反映), 不能按写入值 0xA2 回读校验 */
+#define RN8306_REG_WMSW             0x0181u  /* 工作模式切换(命令型), 1B: 0xA2=GOEMM 切 EMM 模式。
+                                             * RN8306 复位后的缺省工作模式手册未明示, 上电/整片
+                                             * 软复位后写 0xA2 兜底确保 EMM(已在 EMM 则芯片不动作,
+                                             * 手册 3.4.36)。注意: 写 0xA2 成功后该寄存器读出为
+                                             * 模式标志 2'b01(SYSSR.WMS[1:0] 同步反映), 不能按写入
+                                             * 值 0xA2 回读校验 */
 #define RN8306_WMSW_EMM             0xA2u    /* 切换到 EMM 计量模式 */
 #define RN8306_REG_SYSCFG           0x0178u  /* 系统配置寄存器, 4B, 复位值 0x38A00;
                                              * bit[31:24]=SYS_PS 写密码位(0xEA), WO 只写不可回读,
@@ -96,9 +99,16 @@ extern "C" {
 #define RN8306_HDSC_EXT_EN          (1u << 11)  /* 24bit 拓展为 32bit(高 8 位补 0) */
 #define RN8306_HDSC_BIT_INV         (1u << 12)  /* 波形按位反序发送 */
 
-/* EMMIE2 位定义(手册 6.5) */
+/* EMMIE2 / EMMIF2 位定义(手册 3.4.27.3/3.4.27.4) */
 #define RN8306_EMMIE2_HSDC_TWAVE_HIE  (1u << 11) /* HSDC 输出半块缓存中断使能 */
 #define RN8306_EMMIE2_HSDC_ERR_IE     (1u << 12) /* HSDC 错误中断使能 */
+#define RN8306_EMMIF2_HSDC_BUSY       (1u << 20) /* HSDC 波形输出忙标志(RO);
+                                                  * BUSY=1 时建议不要清 HDSC_CTL.EN,
+                                                  * EN=0 后该标志自动清零(手册 3.4.27.4) */
+
+/* SYSSR(0x18A) 位定义(手册 3.4.42) */
+#define RN8306_SYSSR_WMS_MSK          (3u << 14) /* WMS[1:0]=bits[15:14]: 01=EMM 模式 */
+#define RN8306_SYSSR_WMS_EMM          (1u << 14)
 
 /* DMA_WAVECON3 位定义(厂商参考代码) */
 #define RN8306_WAVECON3_CROSS       (1u << 10)  /* 1=通道交叉缓存模式 */
@@ -170,11 +180,13 @@ typedef void (*rn8306_evt_fn_t)(void *ctx, rn8306_t *self, rn8306_evt_t evt);
 /* 配置                                                                */
 /* ------------------------------------------------------------------ */
 typedef enum {
-    RN8306_HSDC_CLK_4M096 = 0,   /* HSCLK = 4.096MHz */
-    RN8306_HSDC_CLK_2M048 = 1,
-    RN8306_HSDC_CLK_1M024 = 2,
-    RN8306_HSDC_CLK_512K  = 3,
+    RN8306_HSDC_CLK_4M096 = 0,   /* HSCLK = 4.096MHz, 全通道数可用 */
+    RN8306_HSDC_CLK_2M048 = 1,   /* 2.048MHz, 8K 采样下最多 7 通道 */
+    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz, 8K 采样下最多 5 通道(6/7 通道会触发 HSDC_ERR) */
+    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz,  8K 采样下最多 3 通道 */
 } rn8306_hsdc_clk_t;
+/* 隐性下限(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1 且 EN 自动清零。
+ * 8K 采样下半块填充 8ms, 帧发送时间须明显小于它; hsdc_setup() 有对应守卫。 */
 
 typedef enum {
     RN8306_CHK_SUM32 = 0,        /* 帧尾 4B: 8bit 累加和, 32bit 结果, 不取反(厂商默认, 已验证) */
@@ -326,8 +338,8 @@ rn8306_err_t rn8306_update_reg(rn8306_t *self, uint16_t addr, uint8_t len,
  * out 需 count*3 字节, 每个采样点 24bit。addr 应在 RN8306_WAVE_BUF_BASE~END 内。
  * 注: 驱动不置 DMA_WAVECON3.SPI_INV(bit11), SPI 读出的采样点高字节在前,
  *     解析请用 rn8306_sample24(..., byte_inv=false), 与 HSDC 流(byte_inv=true)不同。
- *     另: 手册 5.3 正文与帧格式表对 CMD 中 BL 位序描述不一致(见 doc/OPEN_QUESTIONS.md),
- *     本函数按帧格式表实现, 上板建议先 burst 4 读 0x200 验证一次。 */
+ *     另: CMD 的 BL 位序按手册 5.3 正文实现(厂商 fnRN8302_ReadBuf 证实帧格式表为
+ *     排版笔误, 见 doc/OPEN_QUESTIONS.md Q1 已结案); 上板可 burst 4 读 0x200 复验一次。 */
 rn8306_err_t rn8306_burst_read_wave(rn8306_t *self, uint16_t addr,
                                     uint8_t count, uint8_t *out);
 

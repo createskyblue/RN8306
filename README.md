@@ -77,11 +77,13 @@ cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c r
    manual (SPI frame format, WREN/WREN2 write-enable, BUFCFG waveform buffer
    format, HDSC_CTL bit fields, 8 kHz sampling config, …), plus one manual
    400-dpi re-read of the buffer-format table to adjudicate a conflict;
-   a subsequent **external AI review** caught two more default-config
-   breakages (read-back verification against a command-type register and a
-   write-only password field — both fixed with regression tests);
+   two subsequent **external AI reviews** caught, respectively, two
+   default-config breakages (read-back verification against a command-type
+   register and a write-only password field) and one burst-read CMD bit-order
+   bug (adjudicated by hard evidence in the vendor's official
+   `fnRN8302_ReadBuf()` FFT code) — all fixed with regression tests;
 2. A host-side mock-chip self-test (38 assertions, including non-ideal
-   register behaviors: command-type registers and write-only bits).
+   register behaviors and CMD/BL encoding checks).
 
 **Questions that could not be closed from the manuals alone** (manual
 self-contradictions, conflicting readings) are tracked in
