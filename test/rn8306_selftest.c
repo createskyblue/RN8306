@@ -25,6 +25,7 @@ static uint8_t  mock_wren2[4];      /* WREN2(0x17F,4B): 真实芯片为独立寄
 static uint8_t  mock_emmif2[4];     /* EMMIF2(0x16C,4B): 同理, 不与 EMMIE2(0x16B..0x16E) 窗口重叠 */
 static int      mock_bad_write_frames;
 static int      mock_bad_cmd_frames;    /* CMD 的 BL 编码与数据长度不符的帧数 */
+static int      mock_fail_reads;        /* 置 1 时模拟 SPI 读帧 IO 失败(测试错误透传) */
 static uint32_t mock_wren_count;
 
 static void mock_reset(void)
@@ -39,6 +40,7 @@ static void mock_reset(void)
     mock_regs[0x1CC] = 0x04;
     mock_bad_write_frames = 0;
     mock_bad_cmd_frames = 0;
+    mock_fail_reads = 0;
     mock_wren_count = 0;
 }
 
@@ -54,6 +56,7 @@ static int mock_io(void *ctx, rn8306_io_op_t op, rn8306_io_msg_t *m)
 
         if ((m->tx[1] & 0x80u) == 0u) {
             /* 读帧: 返回寄存器内容 + 校验和 */
+            if (mock_fail_reads) { return -1; }
             uint16_t base = (uint16_t)(((uint16_t)(m->tx[1] >> 4) & 0x07u) << 8);
             uint16_t ra = (uint16_t)(base + m->tx[0]);
             uint8_t bl_field = (uint8_t)(((m->tx[1] >> 2) & 0x03u) | (((m->tx[1] >> 1) & 0x01u) << 2));
@@ -387,10 +390,37 @@ static void test_rate_guard(void)
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard covers DS_CFG=11 (fixed 8K)");
 
-    /* DS_CFG=00 为同步采样(非固定 8K), 守卫跳过 */
+    /* DS_CFG=00 为同步采样(跟踪电网频率, 最高 512 点/周波@70Hz=35.84kHz, 手册 2.4.2):
+     * 未显式给出 sync_sample_hz 时守卫拒绝, 防止高点数配置静默放行 */
     cfg.dma_wavecon = 0x00u;
     rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard skips DS_CFG=00 (sync mode)");
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
+          "guard rejects DS_CFG=00 without sync_sample_hz");
+
+    /* 给出同步采样率 6.4kHz(128 点@50Hz 默认档)后按实际速率核算:
+     * 7ch@512K 帧 21ms > 0.8x10ms -> 拒; 7ch@2.048M 帧 5.27ms < 8ms -> 放行 */
+    cfg.sync_sample_hz = 6400u; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
+          "sync 6.4kHz: 7ch@512K rejected");
+
+    cfg.hsdc_clk = RN8306_HSDC_CLK_2M048;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
+          "sync 6.4kHz: 7ch@2.048M allowed");
+
+    /* B1 回归: 守卫失败的 setup 不得触碰状态 —— 先合法 setup+start, 再以非法
+     * 配置重跑 setup, frame_payload 应保持旧值(正在运行的流不受影响) */
+    cfg = def;
+    cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    rn8306_init(&rn, &itf, &cfg);
+    (void)rn8306_hsdc_setup(&rn);
+    (void)rn8306_hsdc_start(&rn, true);
+    rn.cfg.wave_channels = 7u;                       /* 模拟用户改配置后重跑 setup */
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "re-setup with bad cfg fails");
+    CHECK(rn.frame_payload == 4u * 64u * 3u, "payload unchanged on failed setup");
+    CHECK(rn.st.hsdc_up, "hsdc_up preserved on failed setup");
+    (void)rn8306_hsdc_start(&rn, false);
 
     /* set_layout 不能绕过守卫: 4ch@1.024M 合法, 改 7ch 应被拒且布局不变 */
     cfg = def;
@@ -404,6 +434,24 @@ static void test_rate_guard(void)
     CHECK(rn.frame_payload == 3u * 64u * 3u, "layout applied after valid change");
 }
 
+static void test_io_error_passthrough(void)
+{
+    rn8306_t      rn;
+    rn8306_if_t   itf;
+    rn8306_config_t cfg = RN8306_CONFIG_DEFAULT;
+
+    mock_reset();
+    memset(&itf, 0, sizeof(itf));
+    itf.io = mock_io;
+    rn8306_init(&rn, &itf, &cfg);
+
+    /* SYSSR 读 IO 失败应透传 ERR_IO, 而不是误报 ERR_VERIFY(模式校验失败) */
+    mock_fail_reads = 1;
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_IO,
+          "SYSSR read IO failure passes through as ERR_IO");
+    mock_fail_reads = 0;
+}
+
 int main(void)
 {
     test_register_access();
@@ -411,6 +459,7 @@ int main(void)
     test_hsdc_stream();
     test_sample24();
     test_rate_guard();
+    test_io_error_passthrough();
     printf("\n%s (%d failure(s))\n", failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", failures);
     return (failures == 0) ? 0 : 1;
 }

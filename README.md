@@ -37,7 +37,7 @@ your callback the moment it arrives.
 ```
 src/        Driver core: rn8306.h / rn8306.c (C standard library only)
 examples/   Usage example: rn8306_example.c (injected callback, IRQ entry, data flow)
-test/       Host self-test: rn8306_selftest.c (built-in "mock chip", 48 assertions)
+test/       Host self-test: rn8306_selftest.c (built-in "mock chip", 54 assertions)
 doc/        Protocol notes: RN8306_通信协议_SPI_HSDC.md (SPI + HSDC protocol digest,
             4V+3I register sequence, pitfall checklist — in Chinese)
             rn8306.pdf (official RN830x_RN730x V3 datasheet Rev1.5)
@@ -82,8 +82,8 @@ cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c r
    register and a write-only password field) and one burst-read CMD bit-order
    bug (adjudicated by hard evidence in the vendor's official
    `fnRN8302_ReadBuf()` FFT code) — all fixed with regression tests;
-2. A host-side mock-chip self-test (48 assertions, including non-ideal
-   register behaviors, CMD/BL encoding and HSCLK rate-guard checks).
+2. A host-side mock-chip self-test (54 assertions, including non-ideal
+   register behaviors, CMD/BL encoding, HSCLK rate-guard and error-passthrough checks).
 
 **Questions that could not be closed from the manuals alone** (manual
 self-contradictions, conflicting readings) are tracked in

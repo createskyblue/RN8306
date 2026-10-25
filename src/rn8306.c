@@ -356,14 +356,30 @@ static uint32_t cs_len_of(const rn8306_config_t *c)
 }
 
 /* HSCLK 下限守卫(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1
- * 且 EN 自动清零。DS_CFG!=00(01/10/11 三档)均为固定 8K 采样(手册 3.4.21.2),
- * 此时要求帧发送时间 < 80% 半块填充时间(留余量)。 */
+ * 且 EN 自动清零。手册 6.6 官方口径: 数据量 = 采样率 x 通道数 x 24(bit/s),
+ * 连续模式要求 HSCLK 明显大于数据量 —— 本守卫等价判据为
+ * "帧发送时间 < 80% 半块填充时间"(比 6.6 表选档略保守, 结论一致);
+ * 采样率过快(如 512 点/周波同步模式 x7ch = 4.3Mbps)导致 4.096M 也不够时,
+ * 同样会被本判据拦截。
+ * 采样率来源: DS_CFG=01/10/11 三档均为固定 8K(3.4.21.2); DS_CFG=00 同步采样
+ * 跟踪电网频率(40~70Hz, 点/周波 x 基频, 最高 512x70Hz=35.84kHz, 手册 2.4.2),
+ * 无法从寄存器配置推断, 要求用户经 cfg->sync_sample_hz 显式给出, 未给则拒绝
+ * (防止高点数配置静默放行)。 */
 static rn8306_err_t check_hsdc_rate(const rn8306_config_t *c, uint32_t frame_payload)
 {
+    uint64_t sample_hz;
+
     if ((c->dma_wavecon & 0x03u) != 0x00u) {
+        sample_hz = 8000u;                       /* DS_CFG=01/10/11: 固定 8K */
+    } else if (c->sync_sample_hz != 0u) {
+        sample_hz = c->sync_sample_hz;           /* DS_CFG=00: 用户显式给出 */
+    } else {
+        return RN8306_ERR_PARAM;                 /* 同步采样未给出采样率 */
+    }
+    {
         uint64_t frame_bits = (uint64_t)(frame_payload + cs_len_of(c)) * 8u;
         uint64_t tx_us   = frame_bits * 1000000u / hsdc_clk_hz[(uint8_t)c->hsdc_clk & 3u];
-        uint64_t fill_us = (uint64_t)c->points_per_half * 125u;   /* 8kHz: 125us/点 */
+        uint64_t fill_us = (uint64_t)c->points_per_half * 1000000u / sample_hz;
         if (tx_us > (fill_us * 4u / 5u)) { return RN8306_ERR_PARAM; }
     }
     return RN8306_OK;
@@ -425,11 +441,14 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
         self->cfg.points_per_half == 0u) {
         return RN8306_ERR_PARAM;
     }
-    self->frame_payload = frame_payload_of(&self->cfg);
-
-    /* HSCLK 下限守卫(覆盖 DS_CFG=01/10/11 三档固定 8K) */
-    err = check_hsdc_rate(&self->cfg, self->frame_payload);
-    if (err != RN8306_OK) { return err; }
+    /* 先验证再提交: 守卫失败时直接返回, 不触碰任何状态 —— 正在运行的旧布局
+     * 波形流(含 frame_payload/hsdc_up/帧定界)不受本次失败影响 */
+    {
+        uint32_t payload = frame_payload_of(&self->cfg);
+        err = check_hsdc_rate(&self->cfg, payload);
+        if (err != RN8306_OK) { return err; }
+        self->frame_payload = payload;
+    }
 
     rn8306_hsdc_resync(self);
     self->st.hsdc_up = false;
@@ -468,18 +487,22 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     {
         uint8_t st[2];
         uint8_t attempt;
+        rn8306_err_t rd = RN8306_ERR_IO;
         /* 若从 SLM/NVM 切入 EMM 可能发生唤醒复位(手册 3.5.4), 首读或为旧值:
-         * 校验不通过时隔 1ms 重读一次, 仍不通过才报错 */
+         * 校验不通过时隔 1ms 重读一次。错误分类: 读失败(IO/CS)原样透传,
+         * 便于上板区分"SPI 不通"与"模式未切成功"; 读成功但 WMS 不对才报 VERIFY */
         for (attempt = 0; attempt < 2u; attempt++) {
-            if (rn8306_read_reg(self, RN8306_REG_SYSSR, st, 2u) == RN8306_OK) {
+            rd = rn8306_read_reg(self, RN8306_REG_SYSSR, st, 2u);
+            if (rd == RN8306_OK) {
                 if ((st[0] & (uint8_t)(RN8306_SYSSR_WMS_MSK >> 8)) ==
                     (uint8_t)(RN8306_SYSSR_WMS_EMM >> 8)) {
                     break;
                 }
+                rd = RN8306_ERR_VERIFY;
             }
             if (attempt == 0u) { (void)io_delay_us(self, 1000u); }
         }
-        if (attempt >= 2u) { return RN8306_ERR_VERIFY; }
+        if (rd != RN8306_OK) { return rd; }
     }
 
     /* 3) SYSCFG 打开 HSDC 功能: 0xEA000000|0x1000 沿用厂商参考代码写法

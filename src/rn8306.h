@@ -234,6 +234,10 @@ typedef struct {
                                       * 其他速率见手册 3.4 节该寄存器说明。
                                       * 注: WAVECNT=0 时该寄存器在缓存过程中会自变(反映实际分频数),
                                       * 驱动对其不做写后回读校验 */
+    uint32_t          sync_sample_hz; /* DS_CFG=00(同步采样)时的实际采样率(Hz), 须显式给出
+                                       * (= 点/周波 x 电网基频, 40~70Hz 跟踪, 手册 2.4.2; 最高
+                                       * 512点x70Hz=35.84kHz)。未给(0)时 hsdc_setup/set_layout
+                                       * 返回 ERR_PARAM; DS_CFG!=00(固定 8K)时忽略本字段 */
     uint32_t          dma_wavecon2;  /* DMA_WAVECON2(0x1D1) 原始值; 0=不写该寄存器(保持复位 0x3F800,
                                       * 原始波形直通, 默认)。厂商 HSDC 流参考配置为 0x00000700
                                       * (CIC 直流校正+增益自动调整+谐波衰减补偿, 使波形幅值与计量
@@ -260,6 +264,7 @@ typedef struct {
         .cpha             = true,                              \
         .cpol             = false,                             \
         .dma_wavecon      = 0x01u,  /* DS_CFG=01: 固定 8K 采样率 */ \
+        .sync_sample_hz   = 0u,     /* 仅 DS_CFG=00 同步采样需显式给出 */ \
         .dma_wavecon2     = 0u,     /* 0=不写, 保持复位(原始波形); 0x0700=厂商流配置 */ \
         .spi_retry        = 2,                                 \
         .reset_delay_us   = 50000u,                            \
