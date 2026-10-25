@@ -375,6 +375,19 @@ static void test_rate_guard(void)
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "channels=5 unsupported");
 
+    /* points_per_half 锁定 64: 芯片半块固定 64 点/通道(手册 3.4.20/6.3.2),
+     * 偏大超过半块容量(448/384 地址), 偏小芯片仍发 64 点 -> 一律拒绝 */
+    cfg = def;
+    cfg.points_per_half = 65u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "pp=65 rejected (>capacity)");
+    cfg.points_per_half = 128u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "pp=128 rejected (>capacity)");
+    cfg.points_per_half = 32u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "pp=32 rejected (chip sends 64)");
+
     /* 守卫矩阵(64 点/半块, SUM32, 手册 6.6 官方口径 占用率<=100%):
      * 7ch@1.024M 发送 10.53ms > 8ms(132%) -> 拒; 6ch@1.024M 9.03ms(113%) -> 拒;
      * 6ch@2.048M 4.52ms(56%) -> 放行 */
@@ -481,17 +494,22 @@ static void test_rate_guard(void)
     CHECK(rn.st.hsdc_up, "hsdc_up preserved on failed setup");
     (void)rn8306_hsdc_start(&rn, false);
 
-    /* set_layout 通道数不可变(BUFCFG 只在 setup 写入芯片, 改通道数须重跑 setup);
-     * 点数/位宽可改但过守卫: 6ch pp=128@2.048M 帧 9.01ms <= 填充 16ms */
+    /* set_layout: 通道数不可变(BUFCFG 只在 setup 写入芯片);
+     * points_per_half 锁定 64(芯片半块结构固定, >64 超容量/<64 芯片仍发 64 点);
+     * ext32 可改(payload 按每点 4 字节重算) */
     cfg = def;
     cfg.wave_channels = 6u; cfg.hsdc_clk = RN8306_HSDC_CLK_2M048;
     rn8306_init(&rn, &itf, &cfg);
     (void)rn8306_hsdc_setup(&rn);
     CHECK(rn8306_hsdc_set_layout(&rn, 7u, 64u, false) == RN8306_ERR_PARAM,
           "set_layout channel change rejected (re-setup required)");
-    CHECK(rn.frame_payload == 6u * 64u * 3u, "layout unchanged after rejection");
-    CHECK(rn8306_hsdc_set_layout(&rn, 6u, 128u, false) == RN8306_OK, "set_layout pp change OK");
-    CHECK(rn.frame_payload == 6u * 128u * 3u, "layout applied after valid change");
+    CHECK(rn8306_hsdc_set_layout(&rn, 6u, 128u, false) == RN8306_ERR_PARAM,
+          "set_layout pp=128 rejected (half-block capacity)");
+    CHECK(rn8306_hsdc_set_layout(&rn, 6u, 32u, false) == RN8306_ERR_PARAM,
+          "set_layout pp=32 rejected (chip still sends 64)");
+    CHECK(rn.frame_payload == 6u * 64u * 3u, "layout unchanged after rejections");
+    CHECK(rn8306_hsdc_set_layout(&rn, 6u, 64u, true) == RN8306_OK, "set_layout ext32 OK");
+    CHECK(rn.frame_payload == 6u * 64u * 4u, "ext32 payload = ch*64*4");
 }
 
 static void test_io_error_passthrough(void)

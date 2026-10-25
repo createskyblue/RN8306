@@ -215,8 +215,12 @@ typedef struct {
                                      * mode13=UA,UC,IA,IC, 手册 6.2.2/6.3.2), 且 3ch 半块为 128 点
                                      * 而非 64 点 —— 本字段抽象无法表达, 驱动不支持; 如有需要请
                                      * 反馈或在实测后扩展白名单与自动映射 */
-    uint16_t          points_per_half; /* 半块采样点数, 默认 64(整块 128 点),
-                                       * 帧长 = points_per_half * wave_channels * (ext32?4:3) */
+    uint16_t          points_per_half; /* 半块每通道采样点数, **必须为 64**(默认):
+                                       * 6/7 通道档芯片半块固定 64 点/通道(BUFCFG 档位
+                                       * 结构, 手册 3.4.20/6.3.2, 半块 448/384 地址),
+                                       * 其他值 setup/set_layout 返回 ERR_PARAM ——
+                                       * >64 超过半块容量, <64 芯片仍按 64 点发送,
+                                       * 两者都导致帧错位。 */
     uint8_t           bufcfg;        /* BUFCFG[4:0] 波形缓存格式, 0xFF=按通道数自动(推荐)。
                                       * 显式指定仅允许以下已验证值(与 wave_channels 匹配, 手册
                                       * 6.2.2 高段 + 6.3.2 地址表, 其余值 setup 返回 ERR_PARAM):
@@ -389,8 +393,8 @@ rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en);
 /* 使能/关闭 HSDC 相关中断(EMMIE2[12:11])。 */
 rn8306_err_t rn8306_hsdc_irq_enable(rn8306_t *self, bool half_ready, bool error);
 
-/* 运行中同步驱动侧帧布局, 重置帧定界状态。仅用于 points_per_half/ext32 与
- * 芯片实际配置对齐(如手动改过芯片寄存器后); **channels 必须与当前配置一致** ——
+/* 运行中同步驱动侧帧布局, 重置帧定界状态。实际可调项仅剩 ext32(位宽);
+ * points_per_half 锁定 64、**channels 必须与当前配置一致** ——
  * 通道数由 BUFCFG 决定、只在 rn8306_hsdc_setup() 时写入芯片, 本函数不会重配
  * 芯片, 改通道数请重新 setup(否则芯片侧帧长与驱动期望错位)。
  * 返回 RN8306_ERR_PARAM 表示参数非法或通不过 HSCLK 速率守卫, 布局保持不变。 */

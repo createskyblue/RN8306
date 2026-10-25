@@ -370,6 +370,13 @@ static rn8306_err_t check_hsdc_rate(const rn8306_config_t *c, uint32_t frame_pay
 {
     uint64_t sample_hz;
 
+    /* 芯片半块结构硬约束(容量+定点数): 缓存共 896 地址单元(200H~57FH,
+     * 手册 3.4.20); mode14/17 半块 448 地址 / mode0~12/15 半块 384 地址
+     * (6.3.2) —— 6/7 通道档每通道固定 64 点/半块, 由 BUFCFG 档位决定、
+     * 不可配置。pp>64 超过半块容量; pp<64 芯片仍按 64 点/半块发送,
+     * 两者都导致驱动期望帧长与芯片实际错位, 故锁定 pp == 64。 */
+    if (c->points_per_half != 64u) { return RN8306_ERR_PARAM; }
+
     if ((c->dma_wavecon & 0x03u) != 0x00u) {
         sample_hz = 8000u;                       /* DS_CFG=01/10/11: 固定 8K */
     } else if ((c->sync_sample_hz >= 2560u) && (c->sync_sample_hz <= 35840u)) {
