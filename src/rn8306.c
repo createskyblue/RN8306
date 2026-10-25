@@ -438,8 +438,12 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     uint32_t wavecon3;
 
     if (self == NULL || self->io == NULL) { return RN8306_ERR_PARAM; }
-    if (self->cfg.wave_channels == 0u || self->cfg.wave_channels > 7u ||
-        self->cfg.points_per_half == 0u) {
+    /* 通道数仅支持 6/7: 3/4 通道档为芯片固定通道集合(mode1/2/13/16, 手册
+     * 6.2.2/6.3.2)且 3ch 半块为 128 点, wave_channels 抽象无法表达, 不支持 */
+    if ((self->cfg.wave_channels != 6u) && (self->cfg.wave_channels != 7u)) {
+        return RN8306_ERR_PARAM;
+    }
+    if (self->cfg.points_per_half == 0u) {
         return RN8306_ERR_PARAM;
     }
     /* 先验证再提交: 守卫失败时直接返回, 不触碰任何状态 —— 正在运行的旧布局
@@ -699,9 +703,10 @@ rn8306_err_t rn8306_hsdc_set_layout(rn8306_t *self, uint8_t channels,
     uint32_t payload;
 
     if (self == NULL) { return RN8306_ERR_PARAM; }
-    if (channels == 0u || channels > 7u || points_per_half == 0u) {
-        return RN8306_ERR_PARAM;
-    }
+    if (points_per_half == 0u) { return RN8306_ERR_PARAM; }
+    /* 通道数只在 setup 时写入芯片(BUFCFG), 本函数不重配芯片 —— 改通道数
+     * 会导致芯片侧帧长与驱动期望错位, 必须重新 hsdc_setup() */
+    if (channels != self->cfg.wave_channels) { return RN8306_ERR_PARAM; }
 
     /* 先在副本上验证新布局(含 HSCLK 速率守卫), 通过后才应用 —— 防止绕过守卫 */
     probe = self->cfg;

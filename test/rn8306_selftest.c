@@ -362,27 +362,35 @@ static void test_rate_guard(void)
     memset(&itf, 0, sizeof(itf));
     itf.io = mock_io;
 
+    /* 通道数收敛: 仅支持 6/7 —— 3/4 通道档为芯片固定通道集合(mode1/2/13/16)
+     * 且 3ch 半块 128 点, wave_channels 抽象表达不了, 一律拒绝(防静默帧错位) */
+    cfg = def;
+    cfg.wave_channels = 3u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "channels=3 unsupported");
+    cfg.wave_channels = 4u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "channels=4 unsupported");
+    cfg.wave_channels = 5u;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "channels=5 unsupported");
+
     /* 守卫矩阵(64 点/半块, SUM32, 手册 6.6 官方口径 占用率<=100%):
-     * 7ch@1.024M 发送 10.53ms > 8ms -> 拒; 5ch@1.024M 7.53ms(占用 94%) -> 放行 */
+     * 7ch@1.024M 发送 10.53ms > 8ms(132%) -> 拒; 6ch@1.024M 9.03ms(113%) -> 拒;
+     * 6ch@2.048M 4.52ms(56%) -> 放行 */
     cfg = def;
     cfg.wave_channels = 7u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;   /* dma_wavecon=0x01 */
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard rejects 7ch@1.024M (DS_CFG=01)");
 
     cfg = def;
-    cfg.wave_channels = 5u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    cfg.wave_channels = 6u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
     rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 5ch@1.024M (94%, official <=100%)");
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard rejects 6ch@1.024M (113%)");
 
-    cfg = def;
-    cfg.wave_channels = 2u; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
+    cfg.hsdc_clk = RN8306_HSDC_CLK_2M048;
     rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 2ch@512K (75%)");
-
-    cfg = def;
-    cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
-    rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 4ch@1.024M");
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "guard allows 6ch@2.048M (56%)");
 
     /* DS_CFG=10/11 也是固定 8K(手册 3.4.21.2), 守卫须覆盖 */
     cfg = def;
@@ -461,28 +469,29 @@ static void test_rate_guard(void)
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "bufcfg/ch mismatch rejected");
 
     /* B1 回归: 守卫失败的 setup 不得触碰状态 —— 先合法 setup+start, 再以非法
-     * 配置重跑 setup, frame_payload 应保持旧值(正在运行的流不受影响) */
+     * 配置(降 HSCLK 档)重跑 setup, frame_payload 应保持旧值(流不受影响) */
     cfg = def;
-    cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    cfg.wave_channels = 7u; cfg.hsdc_clk = RN8306_HSDC_CLK_2M048;
     rn8306_init(&rn, &itf, &cfg);
     (void)rn8306_hsdc_setup(&rn);
     (void)rn8306_hsdc_start(&rn, true);
-    rn.cfg.wave_channels = 7u;                       /* 模拟用户改配置后重跑 setup */
+    rn.cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;         /* 模拟用户改配置后重跑 setup */
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "re-setup with bad cfg fails");
-    CHECK(rn.frame_payload == 4u * 64u * 3u, "payload unchanged on failed setup");
+    CHECK(rn.frame_payload == 7u * 64u * 3u, "payload unchanged on failed setup");
     CHECK(rn.st.hsdc_up, "hsdc_up preserved on failed setup");
     (void)rn8306_hsdc_start(&rn, false);
 
-    /* set_layout 不能绕过守卫: 4ch@1.024M 合法, 改 7ch 应被拒且布局不变 */
+    /* set_layout 通道数不可变(BUFCFG 只在 setup 写入芯片, 改通道数须重跑 setup);
+     * 点数/位宽可改但过守卫: 6ch pp=128@2.048M 帧 9.01ms <= 填充 16ms */
     cfg = def;
-    cfg.wave_channels = 4u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
+    cfg.wave_channels = 6u; cfg.hsdc_clk = RN8306_HSDC_CLK_2M048;
     rn8306_init(&rn, &itf, &cfg);
     (void)rn8306_hsdc_setup(&rn);
     CHECK(rn8306_hsdc_set_layout(&rn, 7u, 64u, false) == RN8306_ERR_PARAM,
-          "set_layout rejected by rate guard");
-    CHECK(rn.frame_payload == 4u * 64u * 3u, "layout unchanged after rejection");
-    CHECK(rn8306_hsdc_set_layout(&rn, 3u, 64u, false) == RN8306_OK, "set_layout valid change OK");
-    CHECK(rn.frame_payload == 3u * 64u * 3u, "layout applied after valid change");
+          "set_layout channel change rejected (re-setup required)");
+    CHECK(rn.frame_payload == 6u * 64u * 3u, "layout unchanged after rejection");
+    CHECK(rn8306_hsdc_set_layout(&rn, 6u, 128u, false) == RN8306_OK, "set_layout pp change OK");
+    CHECK(rn.frame_payload == 6u * 128u * 3u, "layout applied after valid change");
 }
 
 static void test_io_error_passthrough(void)

@@ -182,8 +182,8 @@ typedef void (*rn8306_evt_fn_t)(void *ctx, rn8306_t *self, rn8306_evt_t evt);
 typedef enum {
     RN8306_HSDC_CLK_4M096 = 0,   /* HSCLK = 4.096MHz, 全通道数可用 */
     RN8306_HSDC_CLK_2M048 = 1,   /* 2.048MHz, 8K 采样下最多 7 通道 */
-    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz, 8K 采样下最多 5 通道(占用 94%, 手册口径内) */
-    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz,  8K 采样下最多 2 通道 */
+    RN8306_HSDC_CLK_1M024 = 2,   /* 1.024MHz: 8K 采样下 6/7 通道均不可用(占用 113%/132%) */
+    RN8306_HSDC_CLK_512K  = 3,   /* 512kHz:  8K 采样下 6/7 通道均不可用(占用 226%/263%) */
 } rn8306_hsdc_clk_t;
 /* 隐性下限(手册 3.4.27.4): 半块没发完又收到半满标志 -> HSDC_ERR_IF=1 且 EN 自动清零。
  * 守卫判据对齐手册 6.6 官方口径: 帧发送时间(含帧尾) <= 半块填充时间(占用率 <=100%);
@@ -208,8 +208,13 @@ typedef struct {
     /* ---- HSDC ---- */
     rn8306_hsdc_clk_t hsdc_clk;      /* HSCLK 时钟, 默认 4.096MHz(7 通道 8K 推荐; 2.048MHz 亦满足) */
     rn8306_chk_t      chk;           /* 帧尾校验, 默认 SUM32 */
-    uint8_t           wave_channels; /* 波形通道数(3/4/6/7), 默认 6: UA UB UC IA IB IC;
-                                     * 7 通道(4V+3I): UA UB UC IA IB IC IN(第 4 路电压接 IN 输入) */
+    uint8_t           wave_channels; /* 波形通道数, 仅支持 6 或 7(其余值 setup 返回 ERR_PARAM):
+                                     *   6: UA UB UC IA IB IC(默认)
+                                     *   7(4V+3I): UA UB UC IA IB IC IN(第 4 路电压接 IN 输入)
+                                     * 3/4 通道档为芯片固定通道集合(mode1/2=UA,UB,UC 或 IA,IB,IC,
+                                     * mode13=UA,UC,IA,IC, 手册 6.2.2/6.3.2), 且 3ch 半块为 128 点
+                                     * 而非 64 点 —— 本字段抽象无法表达, 驱动不支持; 如有需要请
+                                     * 反馈或在实测后扩展白名单与自动映射 */
     uint16_t          points_per_half; /* 半块采样点数, 默认 64(整块 128 点),
                                        * 帧长 = points_per_half * wave_channels * (ext32?4:3) */
     uint8_t           bufcfg;        /* BUFCFG[4:0] 波形缓存格式, 0xFF=按通道数自动(推荐)。
@@ -384,9 +389,11 @@ rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en);
 /* 使能/关闭 HSDC 相关中断(EMMIE2[12:11])。 */
 rn8306_err_t rn8306_hsdc_irq_enable(rn8306_t *self, bool half_ready, bool error);
 
-/* 运行中修改帧布局(换通道数/点数/位宽后调用), 重置帧定界状态。
- * 返回 RN8306_ERR_PARAM 表示新布局通不过 HSCLK 速率守卫(8K 下发送跟不上),
- * 此时布局保持不变。 */
+/* 运行中同步驱动侧帧布局, 重置帧定界状态。仅用于 points_per_half/ext32 与
+ * 芯片实际配置对齐(如手动改过芯片寄存器后); **channels 必须与当前配置一致** ——
+ * 通道数由 BUFCFG 决定、只在 rn8306_hsdc_setup() 时写入芯片, 本函数不会重配
+ * 芯片, 改通道数请重新 setup(否则芯片侧帧长与驱动期望错位)。
+ * 返回 RN8306_ERR_PARAM 表示参数非法或通不过 HSCLK 速率守卫, 布局保持不变。 */
 rn8306_err_t rn8306_hsdc_set_layout(rn8306_t *self, uint8_t channels,
                                     uint16_t points_per_half, bool ext32);
 
