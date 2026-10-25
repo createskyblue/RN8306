@@ -71,6 +71,14 @@ static int mock_io(void *ctx, rn8306_io_op_t op, rn8306_io_msg_t *m)
                     memcpy(mock_wren2, &m->tx[2], 4u);   /* WREN2: 独立 4 字节寄存器 */
                 } else if (ra == 0x016Cu && data_len == 4u) {
                     memcpy(mock_emmif2, &m->tx[2], 4u);  /* EMMIF2: 独立 4 字节寄存器 */
+                } else if (ra == 0x0181u && data_len == 1u && m->tx[2] == 0xA2u) {
+                    mock_regs[0x181] = 0x01u;  /* WMSW 命令型: 写 0xA2 后读出为模式标志 2'b01 */
+                } else if (ra == 0x0178u && data_len == 4u) {
+                    /* SYSCFG: 高 8 位 SYS_PS 为 WO 写密码(0xEA), 回读恒为 0 */
+                    mock_regs[0x178] = 0x00u;
+                    mock_regs[0x179] = m->tx[3];
+                    mock_regs[0x17A] = m->tx[4];
+                    mock_regs[0x17B] = m->tx[5];
                 } else {
                     for (i = 0; i < data_len; i++) { mock_regs[ra + i] = m->tx[2u + i]; }
                     if (ra == 0x0180u && data_len == 1u && m->tx[2] == RN8306_WREN_CMD) {
@@ -148,7 +156,8 @@ static void test_register_access(void)
           "read_reg DeviceID(0x830200)");
     CHECK(rn8306_check_device(&rn) == RN8306_OK, "check_device");
 
-    /* 32 位读 + 读改写: SYSCFG |= 0xEA001000 */
+    /* 32 位读 + 读改写: SYSCFG |= 0xEA001000
+     * (mock 模拟 SYSCFG 高 8 位为 WO 写密码: 回读恒无 0xEA) */
     err = rn8306_read_reg32(&rn, RN8306_REG_SYSCFG, &v32);
     CHECK(err == RN8306_OK && v32 == 0x00038A00u, "read_reg32 SYSCFG reset value");
 
@@ -156,8 +165,8 @@ static void test_register_access(void)
     CHECK(err == RN8306_OK, "update_reg32 SYSCFG");
 
     err = rn8306_read_reg32(&rn, RN8306_REG_SYSCFG, &v32);
-    CHECK(err == RN8306_OK && v32 == (0x00038A00u | 0xEA001000u),
-          "SYSCFG read-back merged");
+    CHECK(err == RN8306_OK && v32 == 0x00039A00u,
+          "SYSCFG read-back merged (high 8B WO, no 0xEA)");
 
     /* update_reg32 结束时应恢复写保护(WRDIS=0xDC 写入 WREN) */
     CHECK(mock_regs[0x180] == RN8306_WRDIS_CMD, "update_reg32 relocks (WRDIS=0xDC)");
@@ -167,6 +176,10 @@ static void test_register_access(void)
 
     /* 写使能确实发生过(update_reg32 内部两级写使能) */
     CHECK(mock_wren_count >= 1, "WREN(0xE5) issued");
+
+    /* 整片软复位: 需先解锁(SOFTRST 要求写使能状态), 复位值 0xFA 写入 0x182 */
+    err = rn8306_soft_reset(&rn);
+    CHECK(err == RN8306_OK && mock_regs[0x182] == 0xFAu, "soft_reset 0xFA written (unlocked)");
 }
 
 static void test_burst_read(void)
@@ -215,7 +228,9 @@ static void test_hsdc_stream(void)
 
     /* --- 配置阶段: 驱动应按 7 通道选择 BUFCFG=10010 并正确拼装寄存器值 --- */
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "hsdc_setup");
-    CHECK(mock_regs[0x181] == RN8306_WMSW_EMM, "WMSW = 0xA2 (EMM mode)");
+    /* mock 模拟命令型 WMSW: 写 0xA2 后寄存器读出为模式标志 0x01。
+     * 本断言同时是 A1 回归: verify_writes=true 下 setup 必须仍返回 OK */
+    CHECK(mock_regs[0x181] == 0x01u, "WMSW readback = mode flag 0x01 (cmd-type reg)");
     CHECK(rn.frame_payload == payload, "frame_payload = 64*7*3 (BUFCFG=10010)");
     CHECK(mock_regs[0x163] == 0x82u, "WSAVECON = 0x82 (BUFCFG[3:0]=0010, 7 通道交叉)");
     CHECK(mock_regs[0x196] == 0x01u, "DMA_WAVECON = 0x01 (固定 8K)");

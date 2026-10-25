@@ -283,12 +283,16 @@ rn8306_err_t rn8306_soft_reset(rn8306_t *self)
 
     if (self == NULL) { return RN8306_ERR_PARAM; }
 
+    /* SOFTRST 命令要求在写使能状态下写入(手册 3.4.37), 否则芯片不动作 */
+    err = rn8306_write_protect(self, true);
+    if (err != RN8306_OK) { return err; }
+
     err = rn8306_write_reg(self, RN8306_REG_SOFTRST, &v, 1u);
     if (err != RN8306_OK) { return err; }
 
     (void)io_delay_us(self, 10000u);   /* 复位后等待 10ms(官方程序 SystemDelay(10)) */
-    /* 注意: 整片复位后芯片回到默认测试模式且写保护恢复 —— 重新 hsdc_setup()
-     * (内部会写 WMSW=0xA2 切回 EMM 模式)才能继续工作 */
+    /* 注意: 整片复位后芯片回到默认测试模式且写保护自动恢复, 故此处不再补上锁;
+     * 复位后必须重新 hsdc_setup()(内部会写 WMSW=0xA2 切回 EMM 模式)才能工作 */
     self->st.hsdc_up = false;
     rn8306_hsdc_resync(self);
     return RN8306_OK;
@@ -422,14 +426,17 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     if (err != RN8306_OK) { return err; }
 
     /* 2) 切换到 EMM 计量模式: 复位后芯片默认测试模式, 不切则计量/波形 DMA 可能
-     *    不工作(手册 p111; 官方程序上电及每次整片复位后必写 0xA2) */
+     *    不工作(手册 3.4.36, p114; 官方程序上电及每次整片复位后必写 0xA2)。
+     *    WMSW 为命令型寄存器: 写 0xA2 成功后读出为模式标志 2'b01(非 0xA2),
+     *    故不走回读校验; 需确认模式可读 SYSSR.WMS[1:0]==2'b01 */
     b1 = RN8306_WMSW_EMM;
-    err = WREG(RN8306_REG_WMSW, &b1, 1u);
+    err = rn8306_write_reg(self, RN8306_REG_WMSW, &b1, 1u);
     if (err != RN8306_OK) { return err; }
 
-    /* 3) SYSCFG 打开 HSDC 功能: bit12=HSDC_EN 有手册依据(p110);
-     *    0xEA000000 为厂商参考代码魔数(DSP_SEL=0+保留位), 保持厂商做法 */
-    err = RMW32V(RN8306_REG_SYSCFG, 0u, 0xEA000000u | 0x1000u);
+    /* 3) SYSCFG 打开 HSDC 功能: 0xEA000000|0x1000 沿用厂商参考代码写法
+     *    (高 8 位 0xEA 是 SYS_PS 写密码, WO 只写, 回读恒不含; bit12 手册标
+     *    Reserved, 置 1 为厂商 HSDC 用法) —— 回读不可能等于写入值, 不做校验 */
+    err = rmw_reg32(self, RN8306_REG_SYSCFG, 0u, 0xEA000000u | 0x1000u);
     if (err != RN8306_OK) { return err; }
 
     /* 4) 模块软复位: 0xE1=MMU 波形缓存 DMA, 0x4C=HSDC(厂商参考代码);
@@ -453,7 +460,19 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     {
         uint8_t wc[4];
         reg_be_pack(self->cfg.dma_wavecon, wc);
-        err = WREG(RN8306_REG_DMA_WAVECON, wc, 4u);
+        /* DMA_WAVECON 不走回读校验: WAVECNT=0 时该寄存器在缓存过程中会自变
+         * (反映实际采样分频数, 手册 3.4.21.2), 回读值不保证等于写入值 */
+        err = rn8306_write_reg(self, RN8306_REG_DMA_WAVECON, wc, 4u);
+        if (err != RN8306_OK) { return err; }
+    }
+
+    /* 5a-1) 可选: DMA_WAVECON2(CIC 直流校正/增益自动调整/谐波衰减补偿)。
+     *       默认 0=不写(保持复位 0x3F800, 原始波形直通); 0x0700=厂商 HSDC
+     *       流参考配置(波形幅值与计量通道对齐), 幅值对不上时启用 */
+    if (self->cfg.dma_wavecon2 != 0u) {
+        uint8_t w2[4];
+        reg_be_pack(self->cfg.dma_wavecon2, w2);
+        err = WREG(RN8306_REG_DMA_WAVECON2, w2, 4u);
         if (err != RN8306_OK) { return err; }
     }
 

@@ -21,7 +21,7 @@ OOP 风格对象 + 依赖注入（用户注入一个 IO 回调，内部 switch-c
 ```
 src/        驱动本体：rn8306.h / rn8306.c（仅依赖 C 标准库）
 examples/   使用示例：rn8306_example.c（依赖注入回调、中断入口、数据流接法）
-test/       主机自测：rn8306_selftest.c（内置"模拟芯片"，36 项断言）
+test/       主机自测：rn8306_selftest.c（内置"模拟芯片"，38 项断言）
 doc/        协议文档：RN8306_通信协议_SPI_HSDC.md（SPI + HSDC 协议整理、4V+3I 配置序列、踩坑清单）
             rn8306.pdf（官方《RN830x_RN730x V3 数据手册》Rev1.5）
 ref/        官方参考资料：用户手册 V1.2、数据手册 V1.3、厂商 HSDC.c 参考源码、RN8302B 资料包
@@ -56,8 +56,12 @@ cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c r
 
 1. 多轮独立 AI 审核——两轮互不共享结论的子智能体对照官方手册逐页核对（SPI 帧格式、
    WREN/WREN2 写使能、BUFCFG 波形缓存格式、HDSC_CTL 位域、8K 采样率配置等），
-   加一轮人工 400DPI 读表裁决；
-2. 主机端"模拟芯片"自测（36 项断言，验证驱动内部一致性与帧定界/校验逻辑）。
+   加一轮人工 400DPI 读表裁决；随后一轮**外部 AI 审核**又抓出 2 个默认配置下必挂的
+   回读校验问题（WMSW 命令型寄存器/SYSCFG 只写密码位，均已修复并有回归自测覆盖）；
+2. 主机端"模拟芯片"自测（38 项断言，含"命令型寄存器/只写位"等非理想行为模拟）。
+
+**当前阶段无法从手册闭环的问题**（手册自相矛盾、多次审读冲突等）统一记录在
+[doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md)，上板后逐项验证关闭。
 
 上板前必测清单（详见协议文档 2.11 节）：WMSW=0xA2 必要性、BYTE_INV=1 帧尾校验字节序
 （用 HSDC 寄存器 0x1CA 定序后锁定 `cs_order`）、DMA_WAVECON2 复位值中的 AGC 位、

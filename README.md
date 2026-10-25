@@ -37,7 +37,7 @@ your callback the moment it arrives.
 ```
 src/        Driver core: rn8306.h / rn8306.c (C standard library only)
 examples/   Usage example: rn8306_example.c (injected callback, IRQ entry, data flow)
-test/       Host self-test: rn8306_selftest.c (built-in "mock chip", 36 assertions)
+test/       Host self-test: rn8306_selftest.c (built-in "mock chip", 38 assertions)
 doc/        Protocol notes: RN8306_通信协议_SPI_HSDC.md (SPI + HSDC protocol digest,
             4V+3I register sequence, pitfall checklist — in Chinese)
             rn8306.pdf (official RN830x_RN730x V3 datasheet Rev1.5)
@@ -77,8 +77,16 @@ cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c r
    manual (SPI frame format, WREN/WREN2 write-enable, BUFCFG waveform buffer
    format, HDSC_CTL bit fields, 8 kHz sampling config, …), plus one manual
    400-dpi re-read of the buffer-format table to adjudicate a conflict;
-2. A host-side mock-chip self-test (36 assertions covering frame delimiting,
-   checksum handling and internal consistency).
+   a subsequent **external AI review** caught two more default-config
+   breakages (read-back verification against a command-type register and a
+   write-only password field — both fixed with regression tests);
+2. A host-side mock-chip self-test (38 assertions, including non-ideal
+   register behaviors: command-type registers and write-only bits).
+
+**Questions that could not be closed from the manuals alone** (manual
+self-contradictions, conflicting readings) are tracked in
+[doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md) (Chinese) — verify and close
+them one by one on the board.
 
 Board bring-up checklist (see section 2.11 of the protocol doc): necessity of
 WMSW=0xA2, byte order of the trailing checksum when BYTE_INV=1 (lock

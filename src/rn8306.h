@@ -43,10 +43,14 @@ extern "C" {
 #define RN8306_REG_WREN             0x0180u  /* 写使能寄存器1, 1B, 命令值见 RN8306_WREN_CMD */
 #define RN8306_REG_WREN2            0x017Fu  /* 写使能寄存器2, 4B; bit[15:8]=命令字(WREN2=0xE5/WRDIS2=0xDC),
                                              * bit[7:0]=扩位命令(0xAA/0x55), bit[31:16]保留(手册 3.4.35, p112) */
-#define RN8306_REG_WMSW             0x0181u  /* 工作模式切换, 1B: 0xA2=EMM(计量)模式; 复位后默认测试模式,
-                                             * 上电/整片软复位(0xFA)后必须写(手册 p111, 官方程序每次初始化必写) */
+#define RN8306_REG_WMSW             0x0181u  /* 工作模式切换(命令型), 1B: 0xA2=GOEMM 切 EMM 模式;
+                                             * 复位后默认测试模式, 上电/整片软复位后必须写(手册 3.4.36, p114)。
+                                             * 注意: 写 0xA2 成功后该寄存器读出为模式标志 2'b01(SYSSR.WMS[1:0]
+                                             * 同步反映), 不能按写入值 0xA2 回读校验 */
 #define RN8306_WMSW_EMM             0xA2u    /* 切换到 EMM 计量模式 */
-#define RN8306_REG_SYSCFG           0x0178u  /* 系统配置寄存器, 4B, 复位值 0x38A00 */
+#define RN8306_REG_SYSCFG           0x0178u  /* 系统配置寄存器, 4B, 复位值 0x38A00;
+                                             * bit[31:24]=SYS_PS 写密码位(0xEA), WO 只写不可回读,
+                                             * 故本寄存器不能整体写后回读校验(手册 3.4.41) */
 #define RN8306_REG_SOFTRST          0x0182u  /* 软件复位寄存器, 1B(0xFA=整片软复位, 0xE1/0x4C=模块复位) */
 #define RN8306_REG_SYSSR            0x018Au  /* 系统状态寄存器, 2B, 只读; REG_WE 位反映写保护态 */
 #define RN8306_REG_CHECKSUM2        0x018Bu  /* NVM1/NVM2/系统配置校验和, 2B, 只读 */
@@ -213,7 +217,13 @@ typedef struct {
     bool              cpol;          /* HSDC CPOL, 默认 false */
     /* ---- 采样率 ---- */
     uint32_t          dma_wavecon;   /* DMA_WAVECON(0x193) 原始值, 默认 0x01 = 8K 采样率(厂商注释);
-                                      * 其他速率见手册 3.4 节该寄存器说明 */
+                                      * 其他速率见手册 3.4 节该寄存器说明。
+                                      * 注: WAVECNT=0 时该寄存器在缓存过程中会自变(反映实际分频数),
+                                      * 驱动对其不做写后回读校验 */
+    uint32_t          dma_wavecon2;  /* DMA_WAVECON2(0x1D1) 原始值; 0=不写该寄存器(保持复位 0x3F800,
+                                      * 原始波形直通, 默认)。厂商 HSDC 流参考配置为 0x00000700
+                                      * (CIC 直流校正+增益自动调整+谐波衰减补偿, 使波形幅值与计量
+                                      * 通道对齐) —— 若上板发现波形幅值与计量瞬时值对不上, 改配此值 */
     /* ---- SPI ---- */
     uint8_t           spi_retry;     /* SPI 读帧校验失败重试次数, 默认 2 */
     /* ---- 复位 ---- */
@@ -236,6 +246,7 @@ typedef struct {
         .cpha             = true,                              \
         .cpol             = false,                             \
         .dma_wavecon      = 0x01u,  /* DS_CFG=01: 固定 8K 采样率 */ \
+        .dma_wavecon2     = 0u,     /* 0=不写, 保持复位(原始波形); 0x0700=厂商流配置 */ \
         .spi_retry        = 2,                                 \
         .reset_delay_us   = 50000u,                            \
     }
@@ -312,7 +323,11 @@ rn8306_err_t rn8306_update_reg(rn8306_t *self, uint16_t addr, uint8_t len,
                                const uint8_t *clr, const uint8_t *set);
 
 /* SPI Burst 读波形缓存: count 仅允许 1/4/8/16/32/64(BL 编码决定),
- * out 需 count*3 字节, 每个采样点 24bit。addr 应在 RN8306_WAVE_BUF_BASE~END 内。 */
+ * out 需 count*3 字节, 每个采样点 24bit。addr 应在 RN8306_WAVE_BUF_BASE~END 内。
+ * 注: 驱动不置 DMA_WAVECON3.SPI_INV(bit11), SPI 读出的采样点高字节在前,
+ *     解析请用 rn8306_sample24(..., byte_inv=false), 与 HSDC 流(byte_inv=true)不同。
+ *     另: 手册 5.3 正文与帧格式表对 CMD 中 BL 位序描述不一致(见 doc/OPEN_QUESTIONS.md),
+ *     本函数按帧格式表实现, 上板建议先 burst 4 读 0x200 验证一次。 */
 rn8306_err_t rn8306_burst_read_wave(rn8306_t *self, uint16_t addr,
                                     uint8_t count, uint8_t *out);
 
@@ -336,7 +351,9 @@ rn8306_err_t rn8306_check_device(rn8306_t *self);
  * 完成后用 rn8306_hsdc_start() 启动。 */
 rn8306_err_t rn8306_hsdc_setup(rn8306_t *self);
 
-/* 启动/停止 HSDC 波形发送(写 DMA_WAVECON3.START 与 HDSC_CTL.EN)。 */
+/* 启动/停止 HSDC 波形发送(写 DMA_WAVECON3.START 与 HDSC_CTL.EN)。
+ * 注: 手册建议 HSDC_BUSY=1 时不要清除 EN(见 doc/OPEN_QUESTIONS.md); 本函数直接清,
+ *     若上板发现停止后芯片异常, 先等半块发送完(BUSY=0)再调 stop。 */
 rn8306_err_t rn8306_hsdc_start(rn8306_t *self, bool en);
 
 /* 使能/关闭 HSDC 相关中断(EMMIE2[12:11])。 */
