@@ -1,4 +1,4 @@
-# RN8306 驱动（4V+3I / 8K / HSDC 连续波形流）
+# RN8306 驱动（4V+3I / HSDC 连续波形流）
 
 [English](README.md) | **简体中文**
 
@@ -21,7 +21,7 @@ OOP 风格对象 + 依赖注入（用户注入一个 IO 回调，内部 switch-c
 ```
 src/        驱动本体：rn8306.h / rn8306.c（仅依赖 C 标准库）
 examples/   使用示例：rn8306_example.c（依赖注入回调、中断入口、数据流接法）
-test/       主机自测：rn8306_selftest.c（内置"模拟芯片"，71 项断言）
+test/       主机自测：rn8306_selftest.c（内置"模拟芯片"，73 项断言）
 doc/        协议文档：RN8306_通信协议_SPI_HSDC.md（SPI + HSDC 协议整理、4V+3I 配置序列、踩坑清单）
             rn8306.pdf（官方《RN830x_RN730x V3 数据手册》Rev1.5）
 ref/        官方参考资料：用户手册 V1.2、数据手册 V1.3、厂商 HSDC.c 参考源码、RN8302B 资料包
@@ -33,11 +33,14 @@ ref/        官方参考资料：用户手册 V1.2、数据手册 V1.3、厂商 
 rn8306_if_t itf = { .io = my_io_cb, .on_wave = my_wave_cb, .on_evt = my_evt_cb };
 rn8306_config_t cfg = RN8306_CONFIG_DEFAULT;   /* 8K / SUM32 / 字节反序 */
 cfg.wave_channels = 7;                          /* 4V+3I: UA,UB,UC,IA,IB,IC,IN */
+cfg.dma_wavecon = 0x00;                         /* 同步采样 */
+cfg.sync_sample_hz = 6400;                      /* 50 Hz × 128 点/周波 */
 
 rn8306_init(&rn, &itf, &cfg);
 rn8306_check_device(&rn);      /* 读 DeviceID 自检 */
 rn8306_hsdc_setup(&rn);        /* 含 WMSW 切 EMM 模式、两级写使能、BUFCFG=10010 */
-rn8306_hsdc_start(&rn, true);  /* 之后 INT1 中断 -> SPI 从机收数 -> rn8306_hsdc_feed() */
+/* 启动推流前，先将 MCU 的 SPI 从机接收缓冲入队。 */
+rn8306_hsdc_start(&rn, true);  /* SPI 从机接收完成 -> rn8306_hsdc_feed() */
 ```
 
 完整接法见 [examples/rn8306_example.c](examples/rn8306_example.c)。
@@ -50,24 +53,24 @@ cd examples && gcc -std=c99 -Wall -Wextra -I../src -o demo ../src/rn8306.c rn830
 cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c rn8306_selftest.c && ./selftest
 ```
 
-## ⚠️ 状态说明
+## 实板验证
 
-**尚未上板测试。** 当前经过的验证仅有：
+**2026-10-29 已在 ESP32-S3 + RN8306 实板验证通过，寄存器通信、连续波形采集和 SD 记录均工作正常。**
 
-1. 多轮独立 AI 审核——两轮互不共享结论的子智能体对照官方手册逐页核对（SPI 帧格式、
-   WREN/WREN2 写使能、BUFCFG 波形缓存格式、HDSC_CTL 位域、8K 采样率配置等），
-   加一轮人工 400DPI 读表裁决；随后**两轮外部 AI 审核**又分别抓出 2 个默认配置下
-   必挂的回读校验问题（WMSW 命令型寄存器/SYSCFG 只写密码位）和 1 个 burst 读
-   CMD 位序 bug（由厂商官方 FFT 代码 `fnRN8302_ReadBuf` 铁证裁决），均已修复
-   并有回归自测覆盖；
-2. 主机端"模拟芯片"自测（71 项断言，含"命令型寄存器/只写位/CMD-BL 编码/速率守卫"等校验）。
+| 验证项 | 结果 |
+|--------|------|
+| DeviceID | `0x830200`，寄存器 SPI 帧校验通过 |
+| 波形采集 | 7 通道、24 bit、实测约 6.4 kHz |
+| 连续运行 | 130 秒，帧校验错误、帧长错误、管线丢帧均为 0 |
+| SD 记录 | 每个完整 30 秒分段含 192000 个采样帧 |
+| 文件完整性 | 文件头、波形数据、收尾块 CRC 全部通过 |
+| 驱动主机自测 | 73 项断言全部通过 |
 
-**当前阶段无法从手册闭环的问题**（手册自相矛盾、多次审读冲突等）统一记录在
-[doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md)，上板后逐项验证关闭。
+WSAVECON 回读校验已按实板行为修正：`[5:4]` 为实时缓存状态，其余配置位仍严格校验，
+解决了写入 `0x82`、回读 `0xB2` 时误报 `ERR_VERIFY` 的问题。
 
-上板前必测清单（详见协议文档 2.11 节）：WMSW=0xA2 必要性、BYTE_INV=1 帧尾校验字节序
-（用 HSDC 寄存器 0x1CA 定序后锁定 `cs_order`）、DMA_WAVECON2 复位值中的 AGC 位、
-GSxx_WAVE 增益、DeviceID 实际返回值。
+上述实测覆盖通信、采集和存储链路。模拟增益标定、相位精度和物理输入对应关系需结合信号发生器测量。
+寄存器细节记录见 [doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md)。
 
 若使用同步采样（`dma_wavecon` 的 DS_CFG=00 档），必须显式设置
 `cfg.sync_sample_hz = 点/周波 × 电网基频`（合法范围 2560~35840Hz），

@@ -27,6 +27,7 @@ static int      mock_bad_write_frames;
 static int      mock_bad_cmd_frames;    /* CMD 的 BL 编码与数据长度不符的帧数 */
 static int      mock_fail_reads;        /* 置 1 时模拟 SPI 读帧 IO 失败(测试错误透传) */
 static uint32_t mock_wren_count;
+static uint8_t mock_ws_config_fault;
 
 static void mock_reset(void)
 {
@@ -42,6 +43,7 @@ static void mock_reset(void)
     mock_bad_cmd_frames = 0;
     mock_fail_reads = 0;
     mock_wren_count = 0;
+    mock_ws_config_fault = 0;
 }
 
 /* 用户 IO 回调: 模拟一颗 RN8306 */
@@ -73,6 +75,9 @@ static int mock_io(void *ctx, rn8306_io_op_t op, rn8306_io_msg_t *m)
                     d = mock_emmif2[i];               /* EMMIF2: 独立寄存器, 读写一致 */
                 } else {
                     d = mock_regs[ra + i];
+                    /* WSAVECON[5:4] reads cache status, not the written command.
+                     * Real board: write 0x82, read 0xB2 while DMA is busy. */
+                    if (ra == RN8306_REG_WSAVECON && i == 0u) { d = (uint8_t)((d | 0x30u) ^ mock_ws_config_fault); }
                 }
                 if (m->rx != NULL) { m->rx[2u + i] = d; }
                 sum += d;
@@ -512,6 +517,22 @@ static void test_rate_guard(void)
     CHECK(rn.frame_payload == 6u * 64u * 4u, "ext32 payload = ch*64*4");
 }
 
+static void test_ws_config_verification(void)
+{
+    rn8306_t rn;
+    rn8306_if_t itf;
+    rn8306_config_t cfg = RN8306_CONFIG_DEFAULT;
+    mock_reset();
+    memset(&itf, 0, sizeof(itf));
+    itf.io = mock_io;
+    rn8306_init(&rn, &itf, &cfg);
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
+          "WSAVECON busy readback (0xB2 vs 0x82) accepted");
+    mock_ws_config_fault = 1u;
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_VERIFY,
+          "WSAVECON writable BUFCFG mismatch still rejected");
+}
+
 static void test_io_error_passthrough(void)
 {
     rn8306_t      rn;
@@ -537,6 +558,7 @@ int main(void)
     test_hsdc_stream();
     test_sample24();
     test_rate_guard();
+    test_ws_config_verification();
     test_io_error_passthrough();
     printf("\n%s (%d failure(s))\n", failures == 0 ? "ALL TESTS PASSED" : "TESTS FAILED", failures);
     return (failures == 0) ? 0 : 1;

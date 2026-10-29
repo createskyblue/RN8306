@@ -1,4 +1,4 @@
-# RN8306 Driver (4V+3I / 8 kHz / HSDC Continuous Waveform Stream)
+# RN8306 Driver (4V+3I / HSDC Continuous Waveform Stream)
 
 **English** | [简体中文](README_zh.md)
 
@@ -37,7 +37,7 @@ your callback the moment it arrives.
 ```
 src/        Driver core: rn8306.h / rn8306.c (C standard library only)
 examples/   Usage example: rn8306_example.c (injected callback, IRQ entry, data flow)
-test/       Host self-test: rn8306_selftest.c (built-in "mock chip", 71 assertions)
+test/       Host self-test: rn8306_selftest.c (built-in "mock chip", 73 assertions)
 doc/        Protocol notes: RN8306_通信协议_SPI_HSDC.md (SPI + HSDC protocol digest,
             4V+3I register sequence, pitfall checklist — in Chinese)
             rn8306.pdf (official RN830x_RN730x V3 datasheet Rev1.5)
@@ -51,11 +51,14 @@ ref/        Official reference material: user manual V1.2, datasheet V1.3,
 rn8306_if_t itf = { .io = my_io_cb, .on_wave = my_wave_cb, .on_evt = my_evt_cb };
 rn8306_config_t cfg = RN8306_CONFIG_DEFAULT;   /* 8 kHz / SUM32 / byte-reversed */
 cfg.wave_channels = 7;                          /* 4V+3I: UA,UB,UC,IA,IB,IC,IN */
+cfg.dma_wavecon = 0x00;                         /* synchronous sampling */
+cfg.sync_sample_hz = 6400;                      /* 128 samples/cycle at 50 Hz */
 
 rn8306_init(&rn, &itf, &cfg);
 rn8306_check_device(&rn);      /* read DeviceID as a sanity check */
 rn8306_hsdc_setup(&rn);        /* WMSW EMM switch, two-level write enable, BUFCFG=10010 */
-rn8306_hsdc_start(&rn, true);  /* then: INT1 IRQ -> SPI-slave RX -> rn8306_hsdc_feed() */
+/* Queue the MCU SPI-slave receive buffers before starting the stream. */
+rn8306_hsdc_start(&rn, true);  /* completed SPI-slave RX -> rn8306_hsdc_feed() */
 ```
 
 Full wiring example: [examples/rn8306_example.c](examples/rn8306_example.c).
@@ -68,32 +71,28 @@ cd examples && gcc -std=c99 -Wall -Wextra -I../src -o demo ../src/rn8306.c rn830
 cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c rn8306_selftest.c && ./selftest
 ```
 
-## ⚠️ Status
+## Hardware verification
 
-**Not yet tested on real hardware.** Verification so far consists of:
+**Verified on an ESP32-S3 + RN8306 board on October 29, 2026. Register access,
+continuous waveform acquisition and SD recording all operated correctly.**
 
-1. Multiple independent AI reviews — two sub-agents with non-shared
-   conclusions cross-checked the driver page by page against the official
-   manual (SPI frame format, WREN/WREN2 write-enable, BUFCFG waveform buffer
-   format, HDSC_CTL bit fields, 8 kHz sampling config, …), plus one manual
-   400-dpi re-read of the buffer-format table to adjudicate a conflict;
-   two subsequent **external AI reviews** caught, respectively, two
-   default-config breakages (read-back verification against a command-type
-   register and a write-only password field) and one burst-read CMD bit-order
-   bug (adjudicated by hard evidence in the vendor's official
-   `fnRN8302_ReadBuf()` FFT code) — all fixed with regression tests;
-2. A host-side mock-chip self-test (71 assertions, including non-ideal
-   register behaviors, CMD/BL encoding, HSCLK rate-guard and error-passthrough checks).
+| Check | Result |
+|-------|--------|
+| DeviceID | `0x830200`, SPI frame checksum passed |
+| Waveform stream | 7 channels, 24-bit samples, approximately 6.4 kHz |
+| Continuous acquisition | 130 seconds, zero frame checksum errors, length errors or pipeline drops |
+| SD recording | 192,000 sample frames per complete 30-second segment |
+| Recorded file integrity | Header, waveform data and footer CRCs all passed |
+| Host driver tests | All 73 assertions passed |
 
-**Questions that could not be closed from the manuals alone** (manual
-self-contradictions, conflicting readings) are tracked in
-[doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md) (Chinese) — verify and close
-them one by one on the board.
+The WSAVECON read-back check handles bits `[5:4]` as live cache status while
+strictly checking the remaining configuration bits. This fixes the false
+`ERR_VERIFY` returned when writing `0x82` and reading `0xB2`.
 
-Board bring-up checklist (see section 2.11 of the protocol doc): necessity of
-WMSW=0xA2, byte order of the trailing checksum when BYTE_INV=1 (lock
-`cs_order` after probing via register 0x1CA), AGC bits in the DMA_WAVECON2
-reset value, GSxx_WAVE gain reset values, actual DeviceID.
+The hardware results cover the communication, acquisition and storage path.
+Analog gain calibration, phase accuracy and physical input mapping require
+signal-generator measurements. Register-specific notes are kept in
+[doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md).
 
 For synchronous sampling (DS_CFG=00 in `dma_wavecon`) you must set
 `cfg.sync_sample_hz = points-per-cycle x line frequency` (valid range

@@ -419,7 +419,14 @@ static rn8306_err_t write_reg_v(rn8306_t *self, uint16_t addr, const uint8_t *in
         if (err != RN8306_OK) { return err; }
         err = rn8306_read_reg(self, addr, rb, len);
         if (err != RN8306_OK) { return err; }
-        if (memcmp(rb, in, (size_t)len) == 0) { return RN8306_OK; }
+        /* WSAVECON[5:4] is a command on write and live cache status on read.
+         * Compare only its stable configuration bits; all other registers
+         * retain the full read-back check. */
+        if (addr == RN8306_REG_WSAVECON && len == 1u) {
+            if (((rb[0] ^ in[0]) & 0xCFu) == 0u) { return RN8306_OK; }
+        } else if (memcmp(rb, in, (size_t)len) == 0) {
+            return RN8306_OK;
+        }
     }
     return RN8306_ERR_VERIFY;
 }
