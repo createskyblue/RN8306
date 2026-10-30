@@ -1,4 +1,4 @@
-# RN8306 驱动（4V+3I / HSDC 连续波形流）
+# RN8306 驱动（4V+3I / 8K / HSDC 连续波形流）
 
 [English](README.md) | **简体中文**
 
@@ -33,8 +33,6 @@ ref/        官方参考资料：用户手册 V1.2、数据手册 V1.3、厂商 
 rn8306_if_t itf = { .io = my_io_cb, .on_wave = my_wave_cb, .on_evt = my_evt_cb };
 rn8306_config_t cfg = RN8306_CONFIG_DEFAULT;   /* 8K / SUM32 / 字节反序 */
 cfg.wave_channels = 7;                          /* 4V+3I: UA,UB,UC,IA,IB,IC,IN */
-cfg.dma_wavecon = 0x00;                         /* 同步采样 */
-cfg.sync_sample_hz = 6400;                      /* 50 Hz × 128 点/周波 */
 
 rn8306_init(&rn, &itf, &cfg);
 rn8306_check_device(&rn);      /* 读 DeviceID 自检 */
@@ -60,7 +58,7 @@ cd test     && gcc -std=c99 -Wall -Wextra -I../src -o selftest ../src/rn8306.c r
 | 验证项 | 结果 |
 |--------|------|
 | DeviceID | `0x830200`，寄存器 SPI 帧校验通过 |
-| 波形采集 | 7 通道、24 bit、实测约 6.4 kHz |
+| 波形采集 | 7 通道、24 bit；产品集成配置实测约 6.4 kHz，源驱动默认 8 kHz |
 | 连续运行 | 130 秒，帧校验错误、帧长错误、管线丢帧均为 0 |
 | SD 记录 | 每个完整 30 秒分段含 192000 个采样帧 |
 | 文件完整性 | 文件头、波形数据、收尾块 CRC 全部通过 |

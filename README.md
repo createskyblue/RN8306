@@ -1,4 +1,4 @@
-# RN8306 Driver (4V+3I / HSDC Continuous Waveform Stream)
+# RN8306 Driver (4V+3I / 8 kHz / HSDC Continuous Waveform Stream)
 
 **English** | [简体中文](README_zh.md)
 
@@ -51,8 +51,6 @@ ref/        Official reference material: user manual V1.2, datasheet V1.3,
 rn8306_if_t itf = { .io = my_io_cb, .on_wave = my_wave_cb, .on_evt = my_evt_cb };
 rn8306_config_t cfg = RN8306_CONFIG_DEFAULT;   /* 8 kHz / SUM32 / byte-reversed */
 cfg.wave_channels = 7;                          /* 4V+3I: UA,UB,UC,IA,IB,IC,IN */
-cfg.dma_wavecon = 0x00;                         /* synchronous sampling */
-cfg.sync_sample_hz = 6400;                      /* 128 samples/cycle at 50 Hz */
 
 rn8306_init(&rn, &itf, &cfg);
 rn8306_check_device(&rn);      /* read DeviceID as a sanity check */
@@ -79,7 +77,7 @@ continuous waveform acquisition and SD recording all operated correctly.**
 | Check | Result |
 |-------|--------|
 | DeviceID | `0x830200`, SPI frame checksum passed |
-| Waveform stream | 7 channels, 24-bit samples, approximately 6.4 kHz |
+| Waveform stream | 7 channels, 24-bit samples; product integration measured about 6.4 kHz, source-driver default is 8 kHz |
 | Continuous acquisition | 130 seconds, zero frame checksum errors, length errors or pipeline drops |
 | SD recording | 192,000 sample frames per complete 30-second segment |
 | Recorded file integrity | Header, waveform data and footer CRCs all passed |
