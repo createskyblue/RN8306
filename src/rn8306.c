@@ -362,10 +362,9 @@ static uint32_t cs_len_of(const rn8306_config_t *c)
  * 按 100% 判据恰好放行, 与官方一致; 官方判"不支持"的行(512 点 x7ch = 4.3Mbps
  * > 4.096M)占用 >100% 被拒。此前的 80% 余量为自创判据, 会拒掉 5 行官方支持
  * 配置(含 512 点 x6ch@4.096M 这一无档可升的行), 已去除。
- * 采样率来源: DS_CFG=01/10/11 三档均为固定 8K(3.4.21.2); DS_CFG=00 同步采样
- * 跟踪电网频率(40~70Hz, 点/周波 x 基频, 手册 2.4.2), 要求用户经 cfg->
- * sync_sample_hz 显式给出(合法范围 2560~35840Hz = 64 点@40Hz ~ 512 点@70Hz),
- * 未给或越界均拒绝(防止高点数配置静默放行 / 误填极小值使守卫失效)。 */
+ * 采样率来源: DS_CFG=01/10/11 三档均为固定 8K(3.4.21.2); 产品使用 DS_CFG=00
+ * 的固定 6.4K 档（SWAVECFG=0、WFreqSEL=0），cfg->sync_sample_hz 只作为带宽守卫
+ * 的显式期望值（合法范围 2560~35840Hz），未给或越界均拒绝。 */
 static rn8306_err_t check_hsdc_rate(const rn8306_config_t *c, uint32_t frame_payload)
 {
     uint64_t sample_hz;
@@ -552,10 +551,13 @@ rn8306_err_t rn8306_hsdc_setup(rn8306_t *self)
     (void)io_delay_us(self, 100u);
 
     /* 5) 波形格式与采样率
-     *    WSAVECON    : bit[3:0]=BUFCFG[3:0]; bit7 仅 DS_CFG=00 时有效, 固定 8K 下无关
-     *    DMA_WAVECON : 采样率, 默认 0x01(DS_CFG=01=固定 8K, 手册 p91-92)
+     *    WSAVECON    : bit[3:0]=BUFCFG[3:0]; bit7=SWAVECFG。
+     *                  DS_CFG=00 时清零 bit7 选择固定 6.4K/7.699K 档，
+     *                  避免进入跟踪输入频率的同步采样模式。
+     *    DMA_WAVECON : DS_CFG 采样源选择；当前产品用 0x00 + WFreqSEL=0
+     *                  的固定 6.4K 档，固定 8K 仍可用 0x01。
      *    DMA_WAVECON3: bit10=交叉缓存, bit1=BUFCFG[4](不启动, START 由 hsdc_start 置位) */
-    b1 = (uint8_t)(0x80u | (bufcfg & 0x0Fu));
+    b1 = (uint8_t)(bufcfg & 0x0Fu);
     err = WREG(RN8306_REG_WSAVECON, &b1, 1u);
     if (err != RN8306_OK) { return err; }
 
