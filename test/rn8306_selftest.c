@@ -76,7 +76,7 @@ static int mock_io(void *ctx, rn8306_io_op_t op, rn8306_io_msg_t *m)
                 } else {
                     d = mock_regs[ra + i];
                     /* WSAVECON[5:4] reads cache status, not the written command.
-                     * Real board: write 0x02, read 0x32 while DMA is busy. */
+                     * Real board: write 0x82, read 0xB2 while DMA is busy. */
                     if (ra == RN8306_REG_WSAVECON && i == 0u) { d = (uint8_t)((d | 0x30u) ^ mock_ws_config_fault); }
                 }
                 if (m->rx != NULL) { m->rx[2u + i] = d; }
@@ -244,8 +244,6 @@ static void test_hsdc_stream(void)
 
     /* 用户硬件: 4V(UA/UB/UC+IN) + 3I(IA/IB/IC) = 7 通道 */
     cfg.wave_channels = 7u;
-    cfg.dma_wavecon = 0x00u;       /* DS_CFG=00 + SWAVECFG=0: 固定 6.4K */
-    cfg.sync_sample_hz = 6400u;    /* 仅用于带宽守卫，硬件不跟踪输入频率 */
     payload = 64u * 7u * 3u;
 
     mock_reset();
@@ -255,14 +253,14 @@ static void test_hsdc_stream(void)
     itf.on_evt = test_evt;
     rn8306_init(&rn, &itf, &cfg);
 
-    /* --- 配置阶段: 驱动应按 7 通道选择 BUFCFG=10010，并锁定 6.4K 固定采样 --- */
+    /* --- 配置阶段: 驱动应按 7 通道选择 BUFCFG=10010 并正确拼装寄存器值 --- */
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "hsdc_setup");
     /* mock 模拟命令型 WMSW: 写 0xA2 后寄存器读出为模式标志 0x01。
      * 本断言同时是 A1 回归: verify_writes=true 下 setup 必须仍返回 OK */
     CHECK(mock_regs[0x181] == 0x01u, "WMSW readback = mode flag 0x01 (cmd-type reg)");
     CHECK(rn.frame_payload == payload, "frame_payload = 64*7*3 (BUFCFG=10010)");
-    CHECK(mock_regs[0x163] == 0x02u, "WSAVECON = 0x02 (SWAVECFG=0, 6.4K, 7 通道交叉)");
-    CHECK(mock_regs[0x196] == 0x00u, "DMA_WAVECON = 0x00 (DS_CFG=00)");
+    CHECK(mock_regs[0x163] == 0x82u, "WSAVECON = 0x82 (BUFCFG[3:0]=0010, 7 通道交叉)");
+    CHECK(mock_regs[0x196] == 0x01u, "DMA_WAVECON = 0x01 (固定 8K)");
     CHECK(rn8306_hsdc_start(&rn, true) == RN8306_OK, "hsdc_start");
     /* 大端: 0x00000403(交叉+BUFCFG[4]+启动) 的低字节在第 4 字节 */
     CHECK(mock_regs[0x1E5] == 0x00u && mock_regs[0x1E8] == 0x03u,
@@ -423,14 +421,14 @@ static void test_rate_guard(void)
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard covers DS_CFG=11 (fixed 8K)");
 
-    /* DS_CFG=00 的固定采样档仍要求显式给出期望采样率，作为带宽守卫输入：
-     * 未显式给出 sync_sample_hz 时守卫拒绝，防止配置静默放行 */
+    /* DS_CFG=00 为同步采样(跟踪电网频率, 最高 512 点/周波@70Hz=35.84kHz, 手册 2.4.2):
+     * 未显式给出 sync_sample_hz 时守卫拒绝, 防止高点数配置静默放行 */
     cfg.dma_wavecon = 0x00u;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
           "guard rejects DS_CFG=00 without sync_sample_hz");
 
-    /* 给出固定采样率 6.4kHz 后按实际速率核算:
+    /* 给出同步采样率 6.4kHz(128 点@50Hz 默认档)后按实际速率核算:
      * 7ch@512K 帧 21ms > 0.8x10ms -> 拒; 7ch@2.048M 帧 5.27ms < 8ms -> 放行 */
     cfg.sync_sample_hz = 6400u; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
     rn8306_init(&rn, &itf, &cfg);
@@ -483,7 +481,7 @@ static void test_rate_guard(void)
     cfg.bufcfg = 0x15u;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "bufcfg=0x15 (mode17, 7ch) allowed");
-    CHECK(mock_regs[0x163] == 0x05u, "WSAVECON=0x05 for bufcfg=10101");
+    CHECK(mock_regs[0x163] == 0x85u, "WSAVECON=0x85 for bufcfg=10101");
     cfg.wave_channels = 6u; cfg.bufcfg = 0x12u;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "bufcfg/ch mismatch rejected");
@@ -529,7 +527,7 @@ static void test_ws_config_verification(void)
     itf.io = mock_io;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
-           "WSAVECON busy readback (0x32 vs 0x02) accepted");
+          "WSAVECON busy readback (0xB2 vs 0x82) accepted");
     mock_ws_config_fault = 1u;
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_VERIFY,
           "WSAVECON writable BUFCFG mismatch still rejected");

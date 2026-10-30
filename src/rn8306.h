@@ -256,11 +256,11 @@ typedef struct {
     /* ---- 复位 ---- */
     uint32_t          reset_delay_us;/* RSTN 释放后到访问芯片的延时, 默认 50ms */
     /* 注: 以下字段后加入结构体, 请使用指定初始化器(.field=value)而非位置初始化 */
-    uint32_t          sync_sample_hz; /* DS_CFG=00 配置的采样率(Hz)，用于 HSDC 带宽守卫；
-                                       * 当前产品固定 6.4K，驱动同时清 SWAVECFG 以禁止输入频率跟踪。
+    uint32_t          sync_sample_hz; /* 仅 DS_CFG=00(同步采样)需要: 实际采样率(Hz),
+                                       * = 点/周波 x 电网基频(40~70Hz 跟踪, 手册 2.4.2)。
                                        * 合法范围 2560~35840(64点@40Hz ~ 512点@70Hz),
-                                       * 未给(0)或越界时 hsdc_setup/set_layout 返回 ERR_PARAM;
-                                       * DS_CFG!=00(固定 8K)时忽略本字段 */
+                                       * 未给(0)或越界时 hsdc_setup/set_layout 返回
+                                       * ERR_PARAM; DS_CFG!=00(固定 8K)时忽略本字段 */
 } rn8306_config_t;
 
 /* 默认配置: HSCLK 4.096MHz / 8K 采样率 / 6 通道 / 24bit / SUM32 校验 / 字节反序 */
