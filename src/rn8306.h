@@ -66,6 +66,10 @@ extern "C" {
 #define RN8306_REG_EMMIF2           0x016Cu  /* EMM 中断标志 2, 4B(含 HSDC_ERR_IF, W1C 写 1 清零) */
 #define RN8306_REG_CHECKSUM1        0x016Au  /* EMM 校表/配置寄存器校验和, 3B, 只读 */
 #define RN8306_REG_DMA_WAVECON      0x0193u  /* 同步采样通道配置, 4B; bit[1:0]=DS_CFG: 01=固定 8K 采样率(p91-92) */
+
+#define RN8306_SAMPLE_RATE_6K4_HZ   6400u
+#define RN8306_SAMPLE_RATE_7K699_HZ 7699u
+#define RN8306_SAMPLE_RATE_8K_HZ    8000u
 #define RN8306_REG_IN_WAVEEN        0x0194u  /* IN 通道波形缓存使能, 2B, 复位 0x0000
                                              * (7 通道交叉模式 IN/IA 独立流转; 6 通道模式置 1 时 IN 顶替 IA, p125-126) */
 #define RN8306_REG_DMA_WAVECON2     0x01D1u  /* 同步采样通道配置 2, 4B, 复位 0x3F800 */
@@ -256,11 +260,12 @@ typedef struct {
     /* ---- 复位 ---- */
     uint32_t          reset_delay_us;/* RSTN 释放后到访问芯片的延时, 默认 50ms */
     /* 注: 以下字段后加入结构体, 请使用指定初始化器(.field=value)而非位置初始化 */
-    uint32_t          sync_sample_hz; /* 仅 DS_CFG=00(同步采样)需要: 实际采样率(Hz),
-                                       * = 点/周波 x 电网基频(40~70Hz 跟踪, 手册 2.4.2)。
-                                       * 合法范围 2560~35840(64点@40Hz ~ 512点@70Hz),
-                                       * 未给(0)或越界时 hsdc_setup/set_layout 返回
-                                       * ERR_PARAM; DS_CFG!=00(固定 8K)时忽略本字段 */
+    uint32_t          sample_rate_hz; /* 用户在初始化时传入的期望波形采样率(Hz)。
+                                       * DS_CFG=01/10/11 必须为 RN8306_SAMPLE_RATE_8K_HZ；
+                                       * DS_CFG=00 合法范围 2560~35840Hz。
+                                       * 未给(0)或越界时 hsdc_setup/set_layout 返回 ERR_PARAM。 */
+    bool              sync_follow_frequency; /* DS_CFG=00 时是否跟踪输入频率；
+                                              * false=固定 WFreqSEL 档，true=同步跟踪。 */
 } rn8306_config_t;
 
 /* 默认配置: HSCLK 4.096MHz / 8K 采样率 / 6 通道 / 24bit / SUM32 校验 / 字节反序 */
@@ -279,7 +284,8 @@ typedef struct {
         .cpha             = true,                              \
         .cpol             = false,                             \
         .dma_wavecon      = 0x01u,  /* DS_CFG=01: 固定 8K 采样率 */ \
-        .sync_sample_hz   = 0u,     /* 仅 DS_CFG=00 同步采样需显式给出 */ \
+        .sample_rate_hz   = RN8306_SAMPLE_RATE_8K_HZ, \
+        .sync_follow_frequency = true, /* DS_CFG=00 默认跟踪输入频率 */ \
         .dma_wavecon2     = 0u,     /* 0=不写, 保持复位(原始波形); 0x0700=厂商流配置 */ \
         .spi_retry        = 2,                                 \
         .reset_delay_us   = 50000u,                            \

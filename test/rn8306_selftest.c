@@ -259,7 +259,7 @@ static void test_hsdc_stream(void)
      * 本断言同时是 A1 回归: verify_writes=true 下 setup 必须仍返回 OK */
     CHECK(mock_regs[0x181] == 0x01u, "WMSW readback = mode flag 0x01 (cmd-type reg)");
     CHECK(rn.frame_payload == payload, "frame_payload = 64*7*3 (BUFCFG=10010)");
-    CHECK(mock_regs[0x163] == 0x82u, "WSAVECON = 0x82 (BUFCFG[3:0]=0010, 7 通道交叉)");
+    CHECK(mock_regs[0x163] == 0x02u, "WSAVECON = 0x02 (BUFCFG[3:0]=0010, 7 通道交叉)");
     CHECK(mock_regs[0x196] == 0x01u, "DMA_WAVECON = 0x01 (固定 8K)");
     CHECK(rn8306_hsdc_start(&rn, true) == RN8306_OK, "hsdc_start");
     /* 大端: 0x00000403(交叉+BUFCFG[4]+启动) 的低字节在第 4 字节 */
@@ -422,15 +422,15 @@ static void test_rate_guard(void)
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "guard covers DS_CFG=11 (fixed 8K)");
 
     /* DS_CFG=00 为同步采样(跟踪电网频率, 最高 512 点/周波@70Hz=35.84kHz, 手册 2.4.2):
-     * 未显式给出 sync_sample_hz 时守卫拒绝, 防止高点数配置静默放行 */
+     * 未显式给出 sample_rate_hz 时守卫拒绝, 防止高点数配置静默放行 */
     cfg.dma_wavecon = 0x00u;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
-          "guard rejects DS_CFG=00 without sync_sample_hz");
+          "guard rejects DS_CFG=00 without sample_rate_hz");
 
     /* 给出同步采样率 6.4kHz(128 点@50Hz 默认档)后按实际速率核算:
      * 7ch@512K 帧 21ms > 0.8x10ms -> 拒; 7ch@2.048M 帧 5.27ms < 8ms -> 放行 */
-    cfg.sync_sample_hz = 6400u; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
+    cfg.sample_rate_hz = RN8306_SAMPLE_RATE_6K4_HZ; cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
           "sync 6.4kHz: 7ch@512K rejected");
@@ -444,13 +444,13 @@ static void test_rate_guard(void)
      * (帧 9.03ms <= 填充 10ms), 以及原 80% 判据下无档可升的
      * 512 点@50Hz(25.6kHz) x6ch -> 4.096M(帧 2.26ms <= 2.5ms) */
     cfg = def;
-    cfg.dma_wavecon = 0x00u; cfg.sync_sample_hz = 6400u;
+    cfg.dma_wavecon = 0x00u; cfg.sample_rate_hz = RN8306_SAMPLE_RATE_6K4_HZ;
     cfg.wave_channels = 6u; cfg.hsdc_clk = RN8306_HSDC_CLK_1M024;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
           "manual 6.6 row: 128pts x6ch -> 1.024M (90%) allowed");
 
-    cfg.sync_sample_hz = 25600u; cfg.hsdc_clk = RN8306_HSDC_CLK_4M096;
+    cfg.sample_rate_hz = 25600u; cfg.hsdc_clk = RN8306_HSDC_CLK_4M096;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
           "manual 6.6 row: 512pts x6ch -> 4.096M allowed (was unsolvable)");
@@ -461,16 +461,16 @@ static void test_rate_guard(void)
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM,
           "manual 6.6 row: 512pts x7ch unsupported (>4.096M)");
 
-    /* sync_sample_hz 范围校验: 误填极小/超大值均拒绝(守卫不失效) */
+    /* sample_rate_hz 范围校验: 误填极小/超大值均拒绝(守卫不失效) */
     cfg = def;
     cfg.dma_wavecon = 0x00u; cfg.wave_channels = 7u;
     cfg.hsdc_clk = RN8306_HSDC_CLK_512K;
-    cfg.sync_sample_hz = 1u;
+    cfg.sample_rate_hz = 1u;
     rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sync_sample_hz=1 rejected");
-    cfg.sync_sample_hz = 40000u;
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sample_rate_hz=1 rejected");
+    cfg.sample_rate_hz = 40000u;
     rn8306_init(&rn, &itf, &cfg);
-    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sync_sample_hz=40000 rejected");
+    CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "sample_rate_hz=40000 rejected");
 
     /* bufcfg 白名单: 照抄早期错误注释的 0x0B(IC 单通道档)必须被拒;
      * 0x15(mode17, 7ch 顺序不同)与 7ch 匹配放行; 0x12 与 6ch 不匹配被拒 */
@@ -481,7 +481,7 @@ static void test_rate_guard(void)
     cfg.bufcfg = 0x15u;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK, "bufcfg=0x15 (mode17, 7ch) allowed");
-    CHECK(mock_regs[0x163] == 0x85u, "WSAVECON=0x85 for bufcfg=10101");
+    CHECK(mock_regs[0x163] == 0x05u, "WSAVECON=0x05 for bufcfg=10101");
     cfg.wave_channels = 6u; cfg.bufcfg = 0x12u;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_PARAM, "bufcfg/ch mismatch rejected");
@@ -527,7 +527,7 @@ static void test_ws_config_verification(void)
     itf.io = mock_io;
     rn8306_init(&rn, &itf, &cfg);
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_OK,
-          "WSAVECON busy readback (0xB2 vs 0x82) accepted");
+          "WSAVECON busy readback (0xB2 vs 0x02) accepted");
     mock_ws_config_fault = 1u;
     CHECK(rn8306_hsdc_setup(&rn) == RN8306_ERR_VERIFY,
           "WSAVECON writable BUFCFG mismatch still rejected");

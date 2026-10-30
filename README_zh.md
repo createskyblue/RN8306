@@ -71,5 +71,7 @@ WSAVECON 回读校验已按实板行为修正：`[5:4]` 为实时缓存状态，
 寄存器细节记录见 [doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md)。
 
 若使用同步采样（`dma_wavecon` 的 DS_CFG=00 档），必须显式设置
-`cfg.sync_sample_hz = 点/周波 × 电网基频`（合法范围 2560~35840Hz），
-否则 `hsdc_setup()` 返回 `ERR_PARAM`；HSCLK 选档判据按手册 6.6：占用率 ≤100%。
+`cfg.sample_rate_hz = 期望波形采样率（Hz）`（合法范围 2560~35840Hz），并按需设置
+`cfg.sync_follow_frequency` 跟踪输入频率；固定 8K 档（DS_CFG=01/10/11）必须传入
+`RN8306_SAMPLE_RATE_8K_HZ`。否则 `hsdc_setup()` 返回 `ERR_PARAM`；HSCLK 选档判据按
+手册 6.6：占用率 ≤100%。

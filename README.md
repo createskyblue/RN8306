@@ -92,7 +92,9 @@ Analog gain calibration, phase accuracy and physical input mapping require
 signal-generator measurements. Register-specific notes are kept in
 [doc/OPEN_QUESTIONS.md](doc/OPEN_QUESTIONS.md).
 
-For synchronous sampling (DS_CFG=00 in `dma_wavecon`) you must set
-`cfg.sync_sample_hz = points-per-cycle x line frequency` (valid range
-2560-35840 Hz), otherwise `hsdc_setup()` returns `ERR_PARAM`; HSCLK
-selection follows manual §6.6: duty cycle <= 100%.
+For synchronous sampling (DS_CFG=00 in `dma_wavecon`) set
+`cfg.sample_rate_hz` to the expected waveform rate in Hz (valid range
+2560-35840 Hz), and choose `cfg.sync_follow_frequency` when the chip should
+track the input frequency. Fixed-rate DS_CFG=01/10/11 configurations require
+`cfg.sample_rate_hz = RN8306_SAMPLE_RATE_8K_HZ`. Otherwise `hsdc_setup()`
+returns `ERR_PARAM`; HSCLK selection follows manual §6.6: duty cycle <= 100%.

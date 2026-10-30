@@ -303,7 +303,7 @@ SOFTRST = 0x4C;   // 复位 HSDC
 // 4) 波形格式与 EMM DMA 模式：UA UB UC IA IB IC，固定 256 点
 WSAVECON     = 0x80;
 DMA_WAVECON  = 0x04;               // 256 点同步采样(DS_CFG=00; 用驱动实现时须显式
-     //                            设置 cfg.sync_sample_hz=点/周波x基频, 否则守卫拒绝)
+     //                            设置 cfg.sample_rate_hz=点/周波x基频, 否则守卫拒绝)
 DMA_WAVECON3 = 0xC00;              // 交叉缓存模式（BIT10=1）
 
 // 5) 配置并打开 HSDC 的 SPI
